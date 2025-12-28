@@ -23,7 +23,7 @@ class FrameRef:
 
 class ClusterReservoirReplayBuffer:
     """
-    Fixed-size replay buffer that subsamples frames using DeepTICA/VAMP clusters.
+    Fixed-size replay buffer that subsamples frames using projection clusters.
 
     Design:
     - Total capacity N_max is split across K clusters (~N_max/K each).

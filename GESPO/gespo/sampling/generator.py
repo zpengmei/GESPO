@@ -4,6 +4,7 @@ from typing import Dict, Tuple, Optional
 from ..utils.geometry import build_residue_maps, kabsch_align
 from ..models.diffusion import ConditionalHierarchicalCartesianDiffusion
 from ..diffusion import create_diffusion
+from gespo.utils.logging import log_print
 
 class ConditionalGenerator:
     def __init__(self, checkpoint_path: str, data_path: str, pdb_path: str, device: Union[torch.device, str] = 'cpu'):
@@ -53,7 +54,7 @@ class ConditionalGenerator:
                 expected_dim = 2 * (self.n_phi + self.n_psi)
             cond_dim = cond_dim or expected_dim
             if cond_dim != expected_dim:
-                print(f"[generator] Warning: conditioning dim {cond_dim} != expected torsion dim {expected_dim}")
+                log_print(f"[generator] Warning: conditioning dim {cond_dim} != expected torsion dim {expected_dim}")
             self.conditioning_dim = cond_dim
         elif self.conditioning_mode == 'pairwise':
             if conditioning is None:
@@ -105,7 +106,7 @@ class ConditionalGenerator:
         load_res = self.model.load_state_dict(checkpoint['state_dict'], strict=False)
         missing, unexpected = load_res.missing_keys, load_res.unexpected_keys
         if missing or unexpected:
-            print(f"[generator] Loaded diffusion weights with non-strict match. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+            log_print(f"[generator] Loaded diffusion weights with non-strict match. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
         self.model.eval()
 
         self.cond_mean = checkpoint['cond_mean'].to(self.device)

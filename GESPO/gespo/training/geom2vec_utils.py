@@ -1,6 +1,7 @@
 """Utilities for Geom2Vec-based training coordination."""
 
 from __future__ import annotations
+from gespo.utils.logging import log_print
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -91,7 +92,7 @@ def align_states_by_overlap(
             permutation[old_state] = new_state
             used_new.add(new_state)
 
-    print(
+    log_print(
         "[State Alignment] Matched "
         f"{len(row_ind)} populated states: {len(old_populated)} old → {len(new_populated)} new"
     )

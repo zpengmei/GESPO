@@ -22,6 +22,7 @@ import numpy as np
 import torch
 import mdtraj as md
 from openmm import unit
+from gespo.utils.logging import log_print
 
 from ..config import TrainingConfig
 from ..sampling import PeptideSampler
@@ -66,21 +67,18 @@ def train(args: argparse.Namespace):
     torch_device = "cuda" if torch.cuda.is_available() and config.platform != "CPU" else "cpu"
     gen_device = resolve_device(config.gen_device)
         
-    print("GESPO Training with LOO VAMP (Geom2Vec, single-model)")
-    print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
-    print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
-    print("Geom2Vec VAMP lobe: single model (no UCB)")
+    log_print("GESPO Training with LOO VAMP (Geom2Vec, single-model)")
+    log_print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
+    log_print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
+    log_print("Geom2Vec VAMP lobe: single model (no UCB)")
     
     # Initialize Environments
-    print("Initializing environments...")
+    log_print("Initializing environments...")
     envs = [PeptideSampler(args, generator_device=gen_device) for _ in range(config.grp_size)]
     env_ref = envs[0]
     
-    # TODO: Load secondary reference PDBs (from loop_refactored.py lines 56-125)
-    # TODO: Build CV/pair seeds for anchoring (from loop_refactored.py lines 91-201)
-    
     # Initialize Policy
-    print("Initializing policy...")
+    log_print("Initializing policy...")
     agent, agent_old, policy_opts, _ = initialize_policy(config, envs, torch_device)
     if not (isinstance(agent, StateLogitPolicy) and isinstance(agent_old, StateLogitPolicy)):
         raise RuntimeError("Discrete state starts require StateLogitPolicy for both current and old policies")
@@ -109,7 +107,7 @@ def train(args: argparse.Namespace):
         loo_vamp_stats_by_model = None
         loo_vamp_stats_keys = set()
         loo_vamp_stats_signature = None
-        print(f"[LOO VAMP] Invalidated global stats ({tag}).")
+        log_print(f"[LOO VAMP] Invalidated global stats ({tag}).")
 
     def _ensure_loo_vamp_history_stats(
         *,
@@ -231,7 +229,7 @@ def train(args: argparse.Namespace):
                 added += 1
 
         if added:
-            print(
+            log_print(
                 f"[LOO VAMP] Seeded global stats ({tag}): added_trajs={added}, "
                 f"skipped_short={skipped_short}, skipped_missing={skipped_missing}"
             )
@@ -242,8 +240,8 @@ def train(args: argparse.Namespace):
     geom2vec_projector: Optional[Geom2VecVAMPProjector] = None
     # Linear VAMP lobe: optional diagnostics (kept for consistency with generative loop).
     geom2vec_projector_linear: Optional[Geom2VecVAMPProjector] = None
-    geom2vec_state_permutation_map = np.arange(int(getattr(config, "tica_dim", 2) or 2), dtype=int)
-    geom2vec_state_inverse_permutation_map = np.arange(int(getattr(config, "tica_dim", 2) or 2), dtype=int)
+    geom2vec_state_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
+    geom2vec_state_inverse_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
     geom2vec_lagtime_embed = 1
     geom2vec_embed_stride = int(getattr(config, "geom2vec_embed_stride", 2) or 2)
     geom2vec_embed_batch_size = int(getattr(config, "geom2vec_embed_batch_size", 32) or 32)
@@ -370,7 +368,7 @@ def train(args: argparse.Namespace):
                     traj = traj_full.atom_slice(protein_indices)
                     coords_nm = np.asarray(traj.xyz, dtype=np.float32)
                 except Exception as exc2:
-                    print(f"[Geom2Vec Cache] Failed to load DCD {dcd_path}: {exc2}")
+                    log_print(f"[Geom2Vec Cache] Failed to load DCD {dcd_path}: {exc2}")
                     return None
             # We already applied mdtraj stride; do not stride again in inference.
             effective_stride = int(geom2vec_embed_stride)
@@ -402,7 +400,7 @@ def train(args: argparse.Namespace):
             )
             return rec.key
         except Exception as exc:
-            print(f"[Geom2Vec Cache] Failed to compute/store embeddings for key={key}: {exc}")
+            log_print(f"[Geom2Vec Cache] Failed to compute/store embeddings for key={key}: {exc}")
             return None
 
     if proj_mode == "geom2vec_vamp":
@@ -456,7 +454,7 @@ def train(args: argparse.Namespace):
         )
 
         # Effective VAMP lag in embedding frames (account for embedding stride).
-        lag_raw = int(getattr(config, "tica_lagtime", 1) or 1)
+        lag_raw = int(getattr(config, "geom2vec_lagtime", 1) or 1)
         geom2vec_lagtime_embed = max(1, int(round(lag_raw / max(1, int(geom2vec_embed_stride)))))
 
 
@@ -465,13 +463,13 @@ def train(args: argparse.Namespace):
         nonlocal geom2vec_state_permutation_map, geom2vec_state_inverse_permutation_map, geom2vec_lagtime_embed
 
         if geom2vec_cache is None or geom2vec_projector is None:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): projector/cache not initialized.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): projector/cache not initialized.")
             return
         if not all_epoch_data:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): no history frames available.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): no history frames available.")
             return
 
-        lag_raw = int(getattr(config, "tica_lagtime", 1) or 1)
+        lag_raw = int(getattr(config, "geom2vec_lagtime", 1) or 1)
         geom2vec_lagtime_embed = max(1, int(round(lag_raw / max(1, int(geom2vec_embed_stride)))))
         lag_embed = int(geom2vec_lagtime_embed)
 
@@ -534,7 +532,7 @@ def train(args: argparse.Namespace):
                 cursor += L_i
 
         if not all_keys:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): no trajectories could be cached.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): no trajectories could be cached.")
             return
 
         # De-duplicate and sort keys by path so "recent" corresponds to later epochs.
@@ -560,7 +558,7 @@ def train(args: argparse.Namespace):
         train_keys = list(reversed(train_keys))
 
         if not train_keys:
-            print(
+            log_print(
                 f"[Geom2Vec Refresh] Skipped ({reason}): no cached trajectories with frames > lag ({lag_embed})."
             )
             return
@@ -577,7 +575,7 @@ def train(args: argparse.Namespace):
                 except Exception:
                     continue
 
-        n_states = int(getattr(config, "tica_dim", 2) or 2)
+        n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
         pair_stride = int(getattr(config, "geom2vec_vamp_pair_stride", 1) or 1)
         train_fraction = float(getattr(config, "geom2vec_vamp_train_fraction", 0.8) or 0.8)
         n_epochs = int(getattr(config, "geom2vec_vamp_epochs", 10) or 10)
@@ -586,7 +584,7 @@ def train(args: argparse.Namespace):
         weight_decay = float(getattr(config, "geom2vec_vamp_weight_decay", 0.0) or 0.0)
         optimizer_name = str(getattr(config, "geom2vec_vamp_optimizer", "Adam") or "Adam")
 
-        print(
+        log_print(
             f"[Geom2Vec Refresh] {reason}: trajs={len(train_keys)}, "
             f"embed_frames~{total_embed_frames}, lag_embed={lag_embed}, pair_stride={pair_stride}"
         )
@@ -632,19 +630,19 @@ def train(args: argparse.Namespace):
                         softmax_output=False,
                     )
                 except Exception as exc_lin:
-                    print(f"[Geom2Vec Refresh] Warning: failed to train linear VAMP lobe (keeping previous): {exc_lin}")
+                    log_print(f"[Geom2Vec Refresh] Warning: failed to train linear VAMP lobe (keeping previous): {exc_lin}")
         except Exception as exc:
-            print(f"[Geom2Vec Refresh] CRITICAL ERROR: Failed to train geom2vec softmax VAMP lobe: {exc}")
+            log_print(f"[Geom2Vec Refresh] CRITICAL ERROR: Failed to train geom2vec softmax VAMP lobe: {exc}")
             try:
                 outcomes = getattr(geom2vec_projector, "last_fit_outcomes", None)
                 if outcomes:
-                    print("[Geom2Vec Refresh] Fit outcomes:")
+                    log_print("[Geom2Vec Refresh] Fit outcomes:")
                     for rec in outcomes:
                         if rec.get("ok"):
                             continue
                         midx = rec.get("model_idx", "?")
                         err = rec.get("error", rec)
-                        print(f"  - model {midx}: {err}")
+                        log_print(f"  - model {midx}: {err}")
             except Exception:
                 pass
             import traceback
@@ -656,12 +654,12 @@ def train(args: argparse.Namespace):
             outcomes_sm = getattr(geom2vec_projector, "last_fit_outcomes", None)
             if outcomes_sm:
                 rec = outcomes_sm[0]
-                print(
+                log_print(
                     f"[Geom2Vec Refresh] Softmax fit: val={rec.get('val_score')} train={rec.get('train_score')} seed={rec.get('seed')}"
                 )
             if geom2vec_projector_linear is not None and getattr(geom2vec_projector_linear, "last_fit_outcomes", None):
                 rec = geom2vec_projector_linear.last_fit_outcomes[0]
-                print(
+                log_print(
                     f"[Geom2Vec Refresh] Linear fit: val={rec.get('val_score')} train={rec.get('train_score')} seed={rec.get('seed')}"
                 )
         except Exception:
@@ -694,9 +692,9 @@ def train(args: argparse.Namespace):
                     inv_perm = np.zeros_like(perm)
                     inv_perm[perm] = np.arange(len(perm))
                     geom2vec_state_inverse_permutation_map = inv_perm
-                    print(f"[Geom2Vec Refresh] Applied confusion-matrix alignment: {perm}")
+                    log_print(f"[Geom2Vec Refresh] Applied confusion-matrix alignment: {perm}")
                 except Exception as exc_align:
-                    print(f"[Geom2Vec Refresh] Warning: overlap alignment failed: {exc_align}; using identity mapping.")
+                    log_print(f"[Geom2Vec Refresh] Warning: overlap alignment failed: {exc_align}; using identity mapping.")
                     identity = np.arange(n_states, dtype=int)
                     geom2vec_state_permutation_map = identity
                     geom2vec_state_inverse_permutation_map = identity
@@ -731,9 +729,9 @@ def train(args: argparse.Namespace):
                     },
                     out_dir / "lobe_meta.pt",
                 )
-                print(f"[Geom2Vec Refresh] Saved lobe to {out_dir}")
+                log_print(f"[Geom2Vec Refresh] Saved lobe to {out_dir}")
             except Exception as exc_save:
-                print(f"[Geom2Vec Refresh] Warning: failed to save lobe weights/meta: {exc_save}")
+                log_print(f"[Geom2Vec Refresh] Warning: failed to save lobe weights/meta: {exc_save}")
 
         # The VAMP lobe weights (and potentially the state permutation) have changed;
         # invalidate any cached global LOO statistics so rewards stay consistent.
@@ -751,9 +749,9 @@ def train(args: argparse.Namespace):
                             agent_old.logits.zero_()
                     for opt in policy_opts:
                         opt.state.clear()
-                    print("[Geom2Vec Refresh] Reset StateLogitPolicy logits to uniform after refresh.")
+                    log_print("[Geom2Vec Refresh] Reset StateLogitPolicy logits to uniform after refresh.")
             except Exception as exc_reset:
-                print(f"[Geom2Vec Refresh] Warning: failed to reset policy after refresh: {exc_reset}")
+                log_print(f"[Geom2Vec Refresh] Warning: failed to reset policy after refresh: {exc_reset}")
 
     def _run_anchoring_round():
         """Seed history with short PDB-grounded trajectories before training."""
@@ -795,7 +793,7 @@ def train(args: argparse.Namespace):
                     )
                 else:
                     all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
-                print(
+                log_print(
                     f"[Anchoring] Detected existing anchoring DCDs in {source_dir}; "
                     f"skipped rerun ({imported} frames loaded)."
                 )
@@ -816,13 +814,13 @@ def train(args: argparse.Namespace):
                 for lens in restored_lens:
                     all_epoch_traj_dcd_paths.append([None] * len(lens))
                     all_epoch_traj_dcd_frame_indices.append([None] * len(lens))
-                print(
+                log_print(
                     f"[Anchoring] Detected existing anchoring data in {source_dir}; "
                     f"skipped rerun ({restored} NPZ epochs loaded)."
                 )
                 return
 
-        print("[Anchoring] Running initial anchoring trajectories...", flush=True)
+        log_print("[Anchoring] Running initial anchoring trajectories...", flush=True)
 
         desired_traj_count = int(getattr(config, "anchoring_num_trajs", 0) or len(envs))
         if desired_traj_count <= 0:
@@ -857,7 +855,7 @@ def train(args: argparse.Namespace):
             else:
                 reset_cvs = env.reset(cv_targets, force_pdb_coords=False)
                 if getattr(env, "reset_failed", False) or reset_cvs is None:
-                    print("[Anchoring] Generator reset failed; falling back to PDB replay.", flush=True)
+                    log_print("[Anchoring] Generator reset failed; falling back to PDB replay.", flush=True)
                     env.reset(cv_targets, force_pdb_coords=True)
 
             h_scales = [0.0] * config.num_mixtures
@@ -880,13 +878,13 @@ def train(args: argparse.Namespace):
                 env.n_md_steps = original_steps
 
             if not (traj_data and is_stable):
-                print(f"[Anchoring] Trajectory {traj_idx+1}/{desired_traj_count} unstable or empty; skipping.")
+                log_print(f"[Anchoring] Trajectory {traj_idx+1}/{desired_traj_count} unstable or empty; skipping.")
                 continue
 
             epoch_data.extend(traj_data)
             traj_lengths.append(len(traj_data))
             traj_dcd_paths.append(str(dcd_path) if dcd_path else None)
-            print(f"[Anchoring] Completed trajectory {traj_idx+1}/{desired_traj_count}.")
+            log_print(f"[Anchoring] Completed trajectory {traj_idx+1}/{desired_traj_count}.")
 
         if epoch_data:
             all_epoch_data.append(epoch_data)
@@ -897,7 +895,7 @@ def train(args: argparse.Namespace):
             # Fit PCA scorer on anchoring data only if any downstream reward/term uses it.
             # (geom2vec_vamp is the *projection* for discrete starts; PCA is auxiliary.)
             w_cov = float(getattr(config, "pca_reward_weight", 0.0) or 0.0)
-            w_trans = float(getattr(config, "tica_start_transition_weight", 0.0) or 0.0)
+            w_trans = float(getattr(config, "geom2vec_start_transition_weight", 0.0) or 0.0)
             w_balance = float(getattr(config, "anchor_balance_weight", 0.0) or 0.0)
             if (w_cov != 0.0) or (w_trans != 0.0) or (w_balance != 0.0):
                 try:
@@ -915,11 +913,11 @@ def train(args: argparse.Namespace):
                     if feat_arr.ndim > 2:
                         feat_arr = feat_arr.reshape(feat_arr.shape[0], -1)
                     pca_scorer.update_model(cv_arr, current_ep=0, features=feat_arr, trajectory_lengths=traj_lengths)
-                    print("[Anchoring] Updated PCA scorer with anchoring data.")
+                    log_print("[Anchoring] Updated PCA scorer with anchoring data.")
                 except Exception as exc:
-                    print(f"[Anchoring] PCA scorer update failed: {exc}")
+                    log_print(f"[Anchoring] PCA scorer update failed: {exc}")
 
-        print("[Anchoring] Done.")
+        log_print("[Anchoring] Done.")
     
     # Load Checkpoint
     latest_ckpt, ckpt_data = ckpt_manager.load_latest()
@@ -933,7 +931,7 @@ def train(args: argparse.Namespace):
             all_epoch_data, env_ref, base_dir=config.snapshot_dir or "."
         )
         if imported_frames > 0:
-            print(f"[Resume] Rebuilt history from {imported_frames} frames (DCD).")
+            log_print(f"[Resume] Rebuilt history from {imported_frames} frames (DCD).")
             all_trajectory_lengths.append(imported_lens)
             traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
             if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
@@ -952,7 +950,7 @@ def train(args: argparse.Namespace):
                 all_epoch_data, base_dir=config.snapshot_dir or "."
             )
             if restored > 0:
-                print(f"[Resume] Rebuilt history from {restored} NPZ epochs.")
+                log_print(f"[Resume] Rebuilt history from {restored} NPZ epochs.")
                 all_trajectory_lengths.extend(restored_lens)
                 for lens in restored_lens:
                     all_epoch_traj_dcd_paths.append([None] * len(lens))
@@ -979,10 +977,10 @@ def train(args: argparse.Namespace):
                 all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
     
     # Discrete state dimension (number of VAMP states)
-    n_tica_components = int(getattr(config, "tica_dim", 2) or 2)
-    config.n_discrete_states = n_tica_components
-    n_discrete_states = n_tica_components
-    print("Initializing Geom2Vec VAMP backbone...")
+    n_state_components = int(getattr(config, "geom2vec_dim", 2) or 2)
+    config.n_discrete_states = n_state_components
+    n_discrete_states = n_state_components
+    log_print("Initializing Geom2Vec VAMP backbone...")
 
     # Initialize PCA scorer (for feature building)
     pca_scorer = initialize_projection_scorer(config, envs[0].n_cvs, args)
@@ -1032,15 +1030,15 @@ def train(args: argparse.Namespace):
     # Plotting for "this round": exclude any bootstrapped history/anchoring epochs.
     round_epoch_data_start = len(all_epoch_data)
     
-    print(f"Starting training from epoch {ep_start+1}...")
+    log_print(f"Starting training from epoch {ep_start+1}...")
     
     # Main Training Loop
     start_state_actions: Optional[torch.Tensor] = None
 
     for ep in range(ep_start, config.episodes):
-        print(f"\n{'='*60}")
-        print(f"Starting Epoch {ep+1}/{config.episodes}")
-        print(f"{'='*60}")
+        log_print(f"\n{'='*60}")
+        log_print(f"Starting Epoch {ep+1}/{config.episodes}")
+        log_print(f"{'='*60}")
         epoch_start_time = time.time()
         
         # A. Refresh projector (every N epochs)
@@ -1053,15 +1051,13 @@ def train(args: argparse.Namespace):
             should_update = ((ep + 1) % refresh_interval == 0) or (not model_ready)
 
         if should_update and all_epoch_data:
-            print(f"[Epoch {ep+1}] Refreshing Geom2Vec VAMP lobe...")
+            log_print(f"[Epoch {ep+1}] Refreshing Geom2Vec VAMP lobe...")
             _refresh_geom2vec_vamp(reason=f"epoch {ep+1}")
             model_ready = _geom2vec_is_trained()
-            # TODO: Warm start policy after refresh (from loop_refactored.py lines 724-971)
-
         # Ensure history-aware LOO stats match the current VAMP lobe before sampling.
         if model_ready:
             try:
-                n_states_hist = int(getattr(config, "tica_dim", 2) or 2)
+                n_states_hist = int(getattr(config, "geom2vec_dim", 2) or 2)
                 lag_hist = int(geom2vec_lagtime_embed)
                 _ensure_loo_vamp_history_stats(
                     upto_epoch_exclusive=len(all_epoch_data),
@@ -1072,16 +1068,16 @@ def train(args: argparse.Namespace):
                     tag=f"epoch {ep+1} pre-sample",
                 )
             except Exception as exc_loo_seed:
-                print(f"[LOO VAMP] Warning: failed to seed global stats ({exc_loo_seed})")
+                log_print(f"[LOO VAMP] Warning: failed to seed global stats ({exc_loo_seed})")
         
         # B. Sample Discrete State Starts from Policy
-        print(f"[Epoch {ep+1}] Phase B: Sampling discrete state starts...")
+        log_print(f"[Epoch {ep+1}] Phase B: Sampling discrete state starts...")
 
         # Sample discrete states from categorical policy
         # If projector is not trained yet, fall back to random exploration
         start_state_actions = None
         if not model_ready or not all_epoch_data:
-            print("[Discrete Starts] Projector not ready, using random exploration")
+            log_print("[Discrete Starts] Projector not ready, using random exploration")
             # Random state indices (uniform over available history)
             if all_epoch_data:
                 n_available = len([item for epoch_data in all_epoch_data for item in epoch_data])
@@ -1112,7 +1108,7 @@ def train(args: argparse.Namespace):
             # Geom2Vec: label a subset of frames (every `embed_stride`) by running the VAMP lobe
             # on cached embeddings, but keep indices in the *raw history* frame space.
             n_hist = len(hist_cv)
-            n_states = int(getattr(config, "tica_dim", 2) or 2)
+            n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
             state_labels = np.full((n_hist,), -1, dtype=np.int64)
 
             use_boundary = bool(getattr(config, "use_boundary_replay", False))
@@ -1196,7 +1192,7 @@ def train(args: argparse.Namespace):
             labeled = int(np.count_nonzero(state_labels >= 0))
             pops = np.bincount(state_labels[state_labels >= 0], minlength=n_states).astype(np.float64) if labeled else None
             if pops is not None:
-                print(
+                log_print(
                     f"[Geom2Vec Starts] Labeled {labeled}/{n_hist} history frames (stride={geom2vec_embed_stride}); "
                     f"pop_min={pops.min():.0f}, pop_max={pops.max():.0f}"
                 )
@@ -1229,9 +1225,9 @@ def train(args: argparse.Namespace):
             probs_old = _mean_probs_str(state_dist_old)
             probs_new = _mean_probs_str(state_dist_new)
             if probs_old is not None:
-                print(f"[Discrete Starts] Start distribution (agent_old sampling): [{probs_old}]")
+                log_print(f"[Discrete Starts] Start distribution (agent_old sampling): [{probs_old}]")
             if probs_new is not None:
-                print(f"[Discrete Starts] Start distribution (agent current):      [{probs_new}]")
+                log_print(f"[Discrete Starts] Start distribution (agent current):      [{probs_new}]")
             start_state_actions = sampled_states.clone().to(torch_device)
             # Mark these launches as policy-driven (not random) so PPO updates include them
             rand_mask = torch.zeros(config.grp_size, dtype=torch.bool, device=torch_device)
@@ -1268,7 +1264,7 @@ def train(args: argparse.Namespace):
                 except Exception:
                     pass
             
-            print(f"[Discrete Starts] Sampled from {int(n_discrete_states)} states via categorical policy")
+            log_print(f"[Discrete Starts] Sampled from {int(n_discrete_states)} states via categorical policy")
         
         # Extract replay coordinates from selected states
         replay_coords = None
@@ -1437,7 +1433,7 @@ def train(args: argparse.Namespace):
                 if _geom2vec_is_trained() and geom2vec_cache is not None and geom2vec_projector is not None:
                     try:
                         lag_embed = int(geom2vec_lagtime_embed)
-                        n_states = int(getattr(config, "tica_dim", 2) or 2)
+                        n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
 
                         # Segment current_epoch_data into per-walker coordinate arrays (protein coords in nm).
                         traj_lengths_raw = [int(x) for x in metrics.get('trajectory_lengths', [])]
@@ -1563,42 +1559,42 @@ def train(args: argparse.Namespace):
                         loo_vamp_rewards = (loo_mean + lam * loo_std).astype(np.float32, copy=False)
                         loo_vamp_contributions = per_model_contribs.mean(axis=0).astype(np.float32, copy=False)
 
-                        print(f"\n[LOO VAMP Statistics - Epoch {ep+1}]")
+                        log_print(f"\n[LOO VAMP Statistics - Epoch {ep+1}]")
                         if n_models > 1:
-                            print(f"  Geom2Vec VAMP ensemble: n_models={n_models}, lambda={lam:.3f}")
-                            print(
+                            log_print(f"  Geom2Vec VAMP ensemble: n_models={n_models}, lambda={lam:.3f}")
+                            log_print(
                                 "  Baseline VAMP-2 per model (history+epoch trajectories): "
                                 + ", ".join(f"{b:.4f}" for b in vamp_baselines)
                             )
                         else:
-                            print(f"  Baseline VAMP-2 (history+epoch trajectories): {float(vamp_baselines[0]):.4f}")
+                            log_print(f"  Baseline VAMP-2 (history+epoch trajectories): {float(vamp_baselines[0]):.4f}")
 
                         # Per-trajectory breakdown (raw Δ, pair-normalized Δ, and final UCB reward).
                         raw_mean = per_model_contribs.mean(axis=0)
                         raw_std = per_model_contribs.std(axis=0)
                         score_label = f"ucb(μ+λσ,λ={lam:.2f})" if lam != 0.0 else "score(μ)"
-                        print(f"  Per-trajectory contributions (delta_i = S_all - S_minus_i):")
+                        log_print(f"  Per-trajectory contributions (delta_i = S_all - S_minus_i):")
                         for i in range(config.grp_size):
                             if pair_counts[i] <= 0:
                                 continue
-                            print(
+                            log_print(
                                 f"    Traj {i:2d}: "
                                 f"raw={float(raw_mean[i]):+.4f}±{float(raw_std[i]):.4f}  "
                                 f"pairs={int(pair_counts[i])}  "
                                 f"{score_label}={float(loo_vamp_rewards[i]):+.4f}"
                             )
-                        print(
+                        log_print(
                             f"  Raw Δ summary: mean={float(raw_mean.mean()):.4f}, std={float(raw_mean.std()):.4f}, "
                             f"min={float(raw_mean.min()):.4f}, max={float(raw_mean.max()):.4f}"
                         )
                         if lam != 0.0:
-                            print(
+                            log_print(
                                 f"  UCB rewards (μ+λσ over models): mean={loo_vamp_rewards.mean():.4f}, std={loo_vamp_rewards.std():.4f}"
                             )
                         else:
-                            print(f"  Mean rewards (μ over models): mean={loo_vamp_rewards.mean():.4f}, std={loo_vamp_rewards.std():.4f}")
+                            log_print(f"  Mean rewards (μ over models): mean={loo_vamp_rewards.mean():.4f}, std={loo_vamp_rewards.std():.4f}")
                     except Exception as exc:
-                        print(f"[LOO VAMP] Warning: Failed to compute geom2vec LOO rewards: {exc}")
+                        log_print(f"[LOO VAMP] Warning: Failed to compute geom2vec LOO rewards: {exc}")
                         import traceback
                         traceback.print_exc()
                         loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
@@ -1626,7 +1622,7 @@ def train(args: argparse.Namespace):
                 combined_rewards = launch_rewards + loo_weight * loo_vamp_tensor
                 reward_tensors['launch'] = combined_rewards
                 metrics['avg_hill'] = float(combined_rewards.mean().item())
-                print(f"[Rewards] Combined launch + LOO VAMP (weight={loo_weight:.2f}): "
+                log_print(f"[Rewards] Combined launch + LOO VAMP (weight={loo_weight:.2f}): "
                       f"launch_mean={launch_rewards.mean():.4f}, loo_mean={loo_vamp_tensor.mean():.4f}, "
                       f"combined_mean={combined_rewards.mean():.4f}")
             else:
@@ -1689,7 +1685,7 @@ def train(args: argparse.Namespace):
                 n_random = rand_mask.sum().item()
                 n_policy = (~rand_mask).sum().item()
                 if n_random > 0:
-                    print(f"[Policy Update] Masking {n_random} random starts, training on {n_policy} policy starts")
+                    log_print(f"[Policy Update] Masking {n_random} random starts, training on {n_policy} policy starts")
 
             start_data = {
                 'features': start_features,
@@ -1707,13 +1703,13 @@ def train(args: argparse.Namespace):
             # Sync Old Policy (every sync_interval epochs)
             if config.sync_interval > 0 and (ep + 1) % config.sync_interval == 0:
                 agent_old.load_state_dict(agent.state_dict())
-                print(f"[Policy] Synced old policy at epoch {ep+1}")
+                log_print(f"[Policy] Synced old policy at epoch {ep+1}")
         else:
             update_stats = {}
         
         # F. Logging & Checkpointing
-        print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
-        print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
+        log_print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
+        log_print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
         
         if stats_path:
             avg_loo_vamp = loo_vamp_rewards.mean() if loo_vamp_rewards is not None else 0.0
@@ -1769,11 +1765,11 @@ def train(args: argparse.Namespace):
                 feature_builder=feature_builder
             )
         
-        print(f"[Epoch {ep+1}] Complete in {time.time() - epoch_start_time:.1f}s.")
+        log_print(f"[Epoch {ep+1}] Complete in {time.time() - epoch_start_time:.1f}s.")
         
         # Cleanup
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
-    print("Training Complete.")
+    log_print("Training Complete.")

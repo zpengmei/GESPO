@@ -3,6 +3,7 @@ from .rl import TorsionARPolicy
 from ..utils.geometry import calculate_rmsd
 from ..utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_xyz
 import os
+from gespo.utils.logging import log_print
 
 def _split_path_list(spec: str) -> List[str]:
     """Split a comma/semicolon/newline-separated list of paths."""
@@ -66,8 +67,8 @@ def _build_torsion_dataset_from_dcd(
     base_dirs = [os.path.abspath(p) for p in base_dirs if str(p).strip()]
     pdb_path = os.path.abspath(pdb_path)
 
-    print(f"[TorsionAR Pretrain] Scanning DCDs under: {base_dirs}")
-    print(f"[TorsionAR Pretrain] Using reference PDB: {pdb_path}")
+    log_print(f"[TorsionAR Pretrain] Scanning DCDs under: {base_dirs}")
+    log_print(f"[TorsionAR Pretrain] Using reference PDB: {pdb_path}")
 
     ref = md.load(pdb_path)
     ref_top = ref.topology
@@ -134,7 +135,7 @@ def _build_torsion_dataset_from_dcd(
 
     total_frames = 0
     for fpath, bdir in dcd_files:
-        print(f"[TorsionAR Pretrain] Loading {fpath} (stride={stride})")
+        log_print(f"[TorsionAR Pretrain] Loading {fpath} (stride={stride})")
 
         tr = None
         try:
@@ -148,23 +149,23 @@ def _build_torsion_dataset_from_dcd(
             # saved OpenMM topology and slice to protein.
             sim_top = base_dir_topology.get(bdir)
             if not sim_top:
-                print(f"[TorsionAR Pretrain] Skipping {fpath}: no simulation_topology.pdb found under {bdir}")
+                log_print(f"[TorsionAR Pretrain] Skipping {fpath}: no simulation_topology.pdb found under {bdir}")
                 continue
             try:
                 tr_full = md.load(fpath, top=sim_top, stride=max(1, stride))
                 prot_idx = tr_full.topology.select("protein")
                 if prot_idx is None or len(prot_idx) == 0:
-                    print(f"[TorsionAR Pretrain] Skipping {fpath}: no protein atoms in topology {sim_top}")
+                    log_print(f"[TorsionAR Pretrain] Skipping {fpath}: no protein atoms in topology {sim_top}")
                     continue
                 tr = tr_full.atom_slice(prot_idx)
             except Exception as exc:
-                print(f"[TorsionAR Pretrain] Skipping {fpath}: {exc}")
+                log_print(f"[TorsionAR Pretrain] Skipping {fpath}: {exc}")
                 continue
 
         if tr.n_frames == 0:
             continue
         if tr.topology.n_residues != n_res:
-            print(
+            log_print(
                 f"[TorsionAR Pretrain] Skipping {fpath}: residue count mismatch "
                 f"(traj n_res={tr.topology.n_residues} vs ref n_res={n_res})"
             )
@@ -244,7 +245,7 @@ def _build_torsion_dataset_from_dcd(
         mask_blocks.append(mask_block)
         globals_blocks.append(glob_block)
         total_frames += n_frames
-        print(f"[TorsionAR Pretrain] Collected {n_frames} frames from {fpath}")
+        log_print(f"[TorsionAR Pretrain] Collected {n_frames} frames from {fpath}")
 
     if not torsion_blocks:
         raise RuntimeError("[TorsionAR Pretrain] No usable frames collected from DCDs.")
@@ -255,7 +256,7 @@ def _build_torsion_dataset_from_dcd(
     N_total = torsions_all.shape[0]
     residue_types = np.tile(residue_types_1d[None, :], (N_total, 1))
 
-    print(f"[TorsionAR Pretrain] Final dataset: {torsions_all.shape[0]} frames, "
+    log_print(f"[TorsionAR Pretrain] Final dataset: {torsions_all.shape[0]} frames, "
           f"{torsions_all.shape[1]} residues.")
 
     return torsions_all, mask_all, residue_types, globals_all
@@ -296,7 +297,7 @@ def pretrain_torsion_ar(
     else:
         torsions_np, angle_mask_np, residue_types_np, global_values_np = _load_npz_dataset(source_path)
     N, L, _ = torsions_np.shape
-    print(f"[TorsionAR Pretrain] Loaded {N} sequences of length {L} from {source_path}")
+    log_print(f"[TorsionAR Pretrain] Loaded {N} sequences of length {L} from {source_path}")
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -354,7 +355,7 @@ def pretrain_torsion_ar(
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    print(f"[TorsionAR Pretrain] Model initialized on device {device}")
+    log_print(f"[TorsionAR Pretrain] Model initialized on device {device}")
 
     for ep in range(epochs):
         model.train()
@@ -387,7 +388,7 @@ def pretrain_torsion_ar(
             total_tokens += tors_b.size(0)
 
         avg_loss = total_loss / max(1, total_tokens)
-        print(f"[TorsionAR Pretrain] Epoch {ep+1}/{epochs} - NLL per sequence: {avg_loss:.4f}")
+        log_print(f"[TorsionAR Pretrain] Epoch {ep+1}/{epochs} - NLL per sequence: {avg_loss:.4f}")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     payload = {
@@ -405,4 +406,4 @@ def pretrain_torsion_ar(
         },
     }
     torch.save(payload, out_path)
-    print(f"[TorsionAR Pretrain] Saved pretrained TorsionARPolicy (with config) to {out_path}")
+    log_print(f"[TorsionAR Pretrain] Saved pretrained TorsionARPolicy (with config) to {out_path}")

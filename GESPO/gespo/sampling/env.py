@@ -14,6 +14,7 @@ from ..utils.geometry import (
 from ..utils.constants import H0, GAMMA, BIAS_GROUP_ID
 from ..utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices
 from .targeted_md import add_replay_steering_forces, steer_replay_to_targets
+from gespo.utils.logging import log_print
 
 def _build_simulation_or_fallback(topology, system, integrator, platform_name: str, platform_device):
     """
@@ -29,14 +30,14 @@ def _build_simulation_or_fallback(topology, system, integrator, platform_name: s
         msg = str(exc)
         is_device_load = "requested cuda device could not be loaded" in msg.lower()
         if platform_name in ("CUDA", "OpenCL") and is_device_load:
-            print(f"[OpenMM] {platform_name} device init failed ({exc}); retrying without device pinning.", flush=True)
+            log_print(f"[OpenMM] {platform_name} device init failed ({exc}); retrying without device pinning.", flush=True)
             try:
                 platform, platform_props = choose_platform(platform_name, "")
                 return Simulation(topology, system, integrator, platform, platform_props or None), platform_name
             except Exception as exc2:
-                print(f"[OpenMM] {platform_name} retry failed ({exc2}); falling back to CPU.", flush=True)
+                log_print(f"[OpenMM] {platform_name} retry failed ({exc2}); falling back to CPU.", flush=True)
         elif platform_name in ("CUDA", "OpenCL"):
-            print(f"[OpenMM] {platform_name} init failed ({exc}); falling back to CPU.", flush=True)
+            log_print(f"[OpenMM] {platform_name} init failed ({exc}); falling back to CPU.", flush=True)
         platform, platform_props = choose_platform("CPU", 0)
         return Simulation(topology, system, integrator, platform, platform_props or None), "CPU"
 
@@ -123,7 +124,7 @@ class PeptideSampler:
         ):
             pdb_path = str(self.topology_pdb_path)
             use_snapshot_topology = True
-            print(f"[INFO] Using existing simulation topology for explicit-solvent replay: {self.topology_pdb_path}")
+            log_print(f"[INFO] Using existing simulation topology for explicit-solvent replay: {self.topology_pdb_path}")
         self.pdb = PDBFile(pdb_path)
         
         # Configurable force fields
@@ -132,11 +133,11 @@ class PeptideSampler:
         ff_implicit = str(getattr(args, "forcefield_implicit", "implicit/gbn2.xml"))
         
         if self.implicit_solvent:
-            print(f"[INFO] Using implicit solvent ({ff_implicit}) at {self.temperature}K.")
+            log_print(f"[INFO] Using implicit solvent ({ff_implicit}) at {self.temperature}K.")
             self.forcefield = ForceField(ff_protein, ff_implicit)
             self.ff_args = {'nonbondedMethod': NoCutoff, 'constraints': HBonds}
         else:
-            print(f"[INFO] Using explicit solvent ({ff_protein} + {ff_water}) at {self.temperature}K.")
+            log_print(f"[INFO] Using explicit solvent ({ff_protein} + {ff_water}) at {self.temperature}K.")
             self.forcefield = ForceField(ff_protein, ff_water)
             self.ff_args = {'nonbondedMethod': PME, 'constraints': HBonds, 'rigidWater': True}
         self.solvent_padding = 1.0 * nanometer
@@ -175,9 +176,9 @@ class PeptideSampler:
                 with self.topology_pdb_path.open("w") as handle:
                     positions = self.sim.context.getState(getPositions=True).getPositions()
                     PDBFile.writeFile(self.sim.topology, positions, handle, keepIds=True)
-                print(f"[INFO] Wrote simulation topology to {self.topology_pdb_path}")
+                log_print(f"[INFO] Wrote simulation topology to {self.topology_pdb_path}")
             except Exception as exc:
-                print(f"[INFO] Warning: failed to write simulation topology ({exc})")
+                log_print(f"[INFO] Warning: failed to write simulation topology ({exc})")
 
         self.cv_definitions = find_all_backbone_dihedrals(self.sim.topology)
         self.n_cvs = len(self.cv_definitions)
@@ -226,14 +227,14 @@ class PeptideSampler:
             self.state_dim = self.n_cvs * 3
         elif self.policy_mode == "pairwise":
             if pair_dim <= 0:
-                print("[WARN] Pairwise policy mode requested but dataset has no pairwise features; falling back to torsion mode.")
+                log_print("[WARN] Pairwise policy mode requested but dataset has no pairwise features; falling back to torsion mode.")
                 self.policy_mode = "torsion"
                 self.state_dim = self.n_cvs * 3
             else:
                 self.state_dim = pair_dim
         elif self.policy_mode == "hybrid":
             if pair_dim <= 0:
-                print("[WARN] Hybrid policy mode requested but dataset has no pairwise features; using torsion features only.")
+                log_print("[WARN] Hybrid policy mode requested but dataset has no pairwise features; using torsion features only.")
                 self.state_dim = self.n_cvs * 3
             else:
                 self.state_dim = self.n_cvs * 3 + pair_dim
@@ -244,7 +245,7 @@ class PeptideSampler:
             # Aligned Cα (nm) + torsion sin/cos
             self.state_dim = self.n_residues * 3 + 2 * self.n_cvs
         else:
-            print(f"[WARN] Unknown policy mode '{self.policy_mode}'; defaulting to torsion.")
+            log_print(f"[WARN] Unknown policy mode '{self.policy_mode}'; defaulting to torsion.")
             self.policy_mode = "torsion"
             self.state_dim = self.n_cvs * 3
         # Capture reference CA coordinates (Å) ordered by residue slot for alignment
@@ -296,11 +297,11 @@ class PeptideSampler:
         if self.include_pairwise_residue and getattr(self.generator, "partner_residues", None) is not None:
             try:
                 self.max_partners = int(np.asarray(self.generator.partner_residues).shape[1])
-                print(f"[Env] Extracted max_partners={self.max_partners} from generator.partner_residues")
+                log_print(f"[Env] Extracted max_partners={self.max_partners} from generator.partner_residues")
             except Exception as e:
-                print(f"[Env] Failed to extract max_partners: {e}")
+                log_print(f"[Env] Failed to extract max_partners: {e}")
                 self.max_partners = 0
-        print(f"[Env] n_residues={self.n_residues}, max_partners={self.max_partners}, hybrid_pair_dim={getattr(self.generator, 'hybrid_pair_dim', 'N/A')}")
+        log_print(f"[Env] n_residues={self.n_residues}, max_partners={self.max_partners}, hybrid_pair_dim={getattr(self.generator, 'hybrid_pair_dim', 'N/A')}")
         
         # Per-residue feature dimension for transformer policy
         if self.policy_mode == "ca":
@@ -310,7 +311,7 @@ class PeptideSampler:
         else:
             self.per_residue_feature_dim = 4 + (self.max_partners if self.include_pairwise_residue else 0)
         
-        print(f"[Env] per_residue_feature_dim={self.per_residue_feature_dim} (policy input dim per residue)")
+        log_print(f"[Env] per_residue_feature_dim={self.per_residue_feature_dim} (policy input dim per residue)")
         self._phi_exists = np.zeros(self.n_residues, dtype=bool)
         self._psi_exists = np.zeros(self.n_residues, dtype=bool)
         for idx in range(self.n_cvs):
@@ -320,14 +321,14 @@ class PeptideSampler:
             else:
                 self._psi_exists[slot] = True
         
-        print(f"Found {self.n_cvs} total backbone dihedrals.")
+        log_print(f"Found {self.n_cvs} total backbone dihedrals.")
         
         self.bias = None
         if self.use_bias:
             self.bias = NDimensionalGaussianBias(system, self.cv_definitions)
-            print("[Bias] Metadynamics bias: ENABLED (deposition guarded by nonzero height)")
+            log_print("[Bias] Metadynamics bias: ENABLED (deposition guarded by nonzero height)")
         else:
-            print("[Bias] Metadynamics bias: DISABLED")
+            log_print("[Bias] Metadynamics bias: DISABLED")
         self.sim.context.reinitialize(preserveState=True)
         self._pdb_xyz = self.sim.context.getState(getPositions=True).getPositions()
         self.cv_values = self.get_cvs()
@@ -598,15 +599,15 @@ class PeptideSampler:
         if use_replay:
             if explicit_coords_nm is not None:
                 if force_pdb_coords:
-                    print(
+                    log_print(
                         "[Reset] Walker explicitly bypassing generator. Using provided reference coords.",
                         flush=True,
                     )
                 else:
-                    print("[Reset] Using explicit replay coordinates (bypass generator).", flush=True)
+                    log_print("[Reset] Using explicit replay coordinates (bypass generator).", flush=True)
                 provided_positions = np.asarray(explicit_coords_nm, dtype=np.float32)
             else:
-                print(
+                log_print(
                     "[Reset] Walker explicitly bypassing generator. Using PDB coords.",
                     flush=True,
                 )
@@ -760,7 +761,7 @@ class PeptideSampler:
                         # Rebuilding hydrogens can change atom counts/order, causing replay mismatch.
                         # Keep the original atom ordering and rely on steering + equilibration.
                         if self.steer_replay_verbose:
-                            print(
+                            log_print(
                                 "[Reset] Skipping hydrogen rebuild (explicit-solvent full-replay topology).",
                                 flush=True,
                             )
@@ -773,7 +774,7 @@ class PeptideSampler:
                     raise RuntimeError("Reset produced no coordinates.")
 
                 if not np.isfinite(ordered_positions).all():
-                    print(
+                    log_print(
                         f"[Geom Reject] Non-finite coordinates detected; "
                         f"{'replay' if use_replay else 'resampling'} "
                         f"({attempt+1}/{n_attempts})."
@@ -882,7 +883,7 @@ class PeptideSampler:
                     and self.steer_replay_starts
                     and (tgt_rmsd_nm is not None or tgt_e2e_nm is not None or bool(steer_extra_targets))
                 ):
-                    print(
+                    log_print(
                         "[TargetedMD] Note: steering is disabled in explicit-solvent resolvation mode "
                         "(--no-explicit-solvent-replay-full-coords). Full-coordinate replay (fixed solvated topology) "
                         "is required and is the default for explicit-solvent runs.",
@@ -899,7 +900,7 @@ class PeptideSampler:
                                 steer_ref_nm = np.asarray(target_full_positions_nm, dtype=np.float64).reshape(-1, 3)
                                 steer_rmsd_target_nm = 0.0
                                 if tgt_rmsd_nm is not None and self.steer_replay_verbose:
-                                    print(
+                                    log_print(
                                         "[TargetedMD] Explicit-solvent generator reset: "
                                         f"steering CA RMSD to generated structure (overriding rmsd_nm={tgt_rmsd_nm:.3f}→0.000).",
                                         flush=True,
@@ -977,7 +978,7 @@ class PeptideSampler:
                             replay_steer_forces = None
                     except Exception as exc_steer_add:
                         if self.steer_replay_verbose:
-                            print(f"[TargetedMD] Warning: failed to add steering forces ({exc_steer_add})", flush=True)
+                            log_print(f"[TargetedMD] Warning: failed to add steering forces ({exc_steer_add})", flush=True)
                         replay_steer_forces = None
                 integrator = LangevinIntegrator(self.temperature*kelvin, self.friction / picosecond, 2.0*femtoseconds)
                 self.sim, chosen_platform = _build_simulation_or_fallback(
@@ -1010,9 +1011,9 @@ class PeptideSampler:
                 if current_min_iters > 0:
                     if not printed_minimize:
                         if attempt == 0:
-                            print("Minimizing replay sample..." if use_replay else "Minimizing conditional sample...")
+                            log_print("Minimizing replay sample..." if use_replay else "Minimizing conditional sample...")
                         else:
-                            print(
+                            log_print(
                                 f"[Resample] Minimizing conditional sample (attempt {attempt+1}/{n_attempts})..."
                             )
                         printed_minimize = True
@@ -1029,7 +1030,7 @@ class PeptideSampler:
                 energy_kj = energy_state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
                 reset_stats["energy_check"] += time.perf_counter() - energy_start
                 if not math.isfinite(energy_kj):
-                    print(
+                    log_print(
                         f"[Energy Reject] Potential energy is non-finite; "
                         f"{'replay' if use_replay else 'resampling'} "
                         f"({attempt+1}/{n_attempts})."
@@ -1038,7 +1039,7 @@ class PeptideSampler:
                         break
                     continue
                 if self.energy_threshold_kj > 0 and energy_kj > self.energy_threshold_kj:
-                    print(
+                    log_print(
                         f"[Energy Reject] {energy_kj:.1f} kJ/mol exceeds threshold {self.energy_threshold_kj:.1f}; "
                         f"{'replay' if use_replay else 'resampling'} "
                         f"({attempt+1}/{n_attempts})."
@@ -1104,13 +1105,13 @@ class PeptideSampler:
                                         rmsd_ok = False
 
                         if not (end_ok and rmsd_ok):
-                            print(
+                            log_print(
                                 f"[Geom Reject] Generator sample failed end-to-end/CA RMSD check; "
                                 f"resampling ({attempt+1}/{n_attempts})."
                             )
                             continue
                     except Exception as exc_geom:
-                        print(f"[Geom Reject] Generator geometry check failed ({exc_geom}); resampling.", flush=True)
+                        log_print(f"[Geom Reject] Generator geometry check failed ({exc_geom}); resampling.", flush=True)
                         continue
 
                 # Heating: enabled only in generator mode
@@ -1136,7 +1137,7 @@ class PeptideSampler:
                 # explicit-solvent full-coordinate replay mode.
                 if replay_steer_forces is not None:
                     if not self.steer_replay_verbose:
-                        print("[TargetedMD] Steering start (set --steer-replay-verbose for diagnostics).", flush=True)
+                        log_print("[TargetedMD] Steering start (set --steer-replay-verbose for diagnostics).", flush=True)
                     steer_start = time.perf_counter()
                     try:
                         steer_replay_to_targets(
@@ -1157,7 +1158,7 @@ class PeptideSampler:
                         )
                     except Exception as exc_steer:
                         if self.steer_replay_verbose:
-                            print(f"[TargetedMD] Warning: steering failed ({exc_steer}); disabling.", flush=True)
+                            log_print(f"[TargetedMD] Warning: steering failed ({exc_steer}); disabling.", flush=True)
                         try:
                             self.sim.context.setParameter("steer_lambda_g", 0.0)
                             self.sim.context.setParameter("steer_lambda_t", 0.0)
@@ -1193,7 +1194,7 @@ class PeptideSampler:
 
                 self.cv_values = self.get_cvs()
                 if np.any(np.isnan(self.cv_values)):
-                    print(
+                    log_print(
                         f"[State Reject] CVs contained NaNs after reset; "
                         f"{'replay' if use_replay else 'resampling'} "
                         f"({attempt+1}/{n_attempts})."
@@ -1210,9 +1211,9 @@ class PeptideSampler:
                 self.last_reset_error = e
                 self.last_reset_trace = traceback.format_exc()
                 mode_label = "replay" if use_replay else "attempt"
-                print(f"WARNING: Reset failed ({mode_label} {attempt+1}/{n_attempts}): {e}")
+                log_print(f"WARNING: Reset failed ({mode_label} {attempt+1}/{n_attempts}): {e}")
                 if self.last_reset_trace:
-                    print(self.last_reset_trace)
+                    log_print(self.last_reset_trace)
                 try:
                     self.sim.context.setPositions(self._pdb_xyz)
                     self.sim.context.setVelocitiesToTemperature(self.temperature * kelvin)
@@ -1225,7 +1226,7 @@ class PeptideSampler:
                     break
 
         if last_exception is not None:
-            print(f"Resetting walker to original PDB structure after repeated failures. Last error: {last_exception}")
+            log_print(f"Resetting walker to original PDB structure after repeated failures. Last error: {last_exception}")
         # Mark this reset as failed so the training loop can skip this walker
         # for the current epoch (no rollout / rewards / diagnostics).
         self.reset_failed = True
@@ -1242,7 +1243,7 @@ class PeptideSampler:
             self.cv_values = np.full((len(self.cv_definitions),), np.nan, dtype=np.float32)
 
         if np.any(np.isnan(self.cv_values)):
-            print("[Fallback] CVs still NaN; rebuilding simulation from reference topology.")
+            log_print("[Fallback] CVs still NaN; rebuilding simulation from reference topology.")
             try:
                 if self.explicit_solvent and self.explicit_solvent_replay_full_coords:
                     if self.topology_pdb_path is not None and self.topology_pdb_path.exists():
@@ -1275,7 +1276,7 @@ class PeptideSampler:
                 self._pdb_xyz = self.sim.context.getState(getPositions=True).getPositions()
                 self.cv_values = self.get_cvs()
             except Exception as exc:
-                print(f"[Fallback] Rebuild failed: {exc}")
+                log_print(f"[Fallback] Rebuild failed: {exc}")
 
         if np.any(np.isnan(self.cv_values)):
             raise RuntimeError("Fallback state CVs contain NaNs.")
@@ -1414,7 +1415,7 @@ class PeptideSampler:
                 if self.cv_values is not None and hasattr(self.cv_values, "tolist"):
                     self.bias.add_mixture(self.cv_values.tolist(), final_heights, sigmas)
                 else:
-                    print("[Bias] Warning: Invalid cv_values, cannot add mixture")
+                    log_print("[Bias] Warning: Invalid cv_values, cannot add mixture")
 
         frames_nm: List[np.ndarray] = []
         traj_data: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
@@ -1439,13 +1440,13 @@ class PeptideSampler:
             if equilibration_steps > 0:
                 try:
                     if equilibration_steps >= 100:
-                        print(
+                        log_print(
                             f"[Equilibrate] Running {int(equilibration_steps)} MD steps before recording.",
                             flush=True,
                         )
                     self.sim.step(int(equilibration_steps))
                 except Exception as e:
-                    print(f"Instability during solvent equilibration: {e}")
+                    log_print(f"Instability during solvent equilibration: {e}")
                     return [], False, None
 
         try:
@@ -1480,10 +1481,10 @@ class PeptideSampler:
 
                 if total_iterations >= 20 and (iter_idx + 1) % (total_iterations // 10) == 0:
                     progress_pct = int(100 * (iter_idx + 1) / total_iterations)
-                    print(f"    MD progress: {progress_pct}% ({iter_idx + 1}/{total_iterations} chunks)", flush=True)
+                    log_print(f"    MD progress: {progress_pct}% ({iter_idx + 1}/{total_iterations} chunks)", flush=True)
 
         except Exception as e:
-            print(f"Walker unstable: {e}. Resetting to last stable state.")
+            log_print(f"Walker unstable: {e}. Resetting to last stable state.")
             is_stable = False
             try:
                 self.sim.context.setPositions(self._pdb_xyz)
