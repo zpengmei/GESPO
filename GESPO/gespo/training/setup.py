@@ -7,6 +7,7 @@ from ..config import TrainingConfig
 from ..sampling import PeptideSampler
 from .rl import GRPOAgent, ResidueTransformerPolicy
 from .scorer import VendiNovelty, PCAScorer
+from gespo.utils.logging import log_print
 
 def _validate_model_consistency(config: TrainingConfig, env: PeptideSampler) -> None:
     """
@@ -101,9 +102,9 @@ def _validate_model_consistency(config: TrainingConfig, env: PeptideSampler) -> 
                 f"max_partners setting."
             )
     
-    print(f"[Consistency Check] ✓ Policy and generator are compatible ({policy_mode} mode)")
+    log_print(f"[Consistency Check] ✓ Policy and generator are compatible ({policy_mode} mode)")
     if policy_mode in ("hybrid", "pairwise"):
-        print(f"[Consistency Check] ✓ Using interleaved distances: "
+        log_print(f"[Consistency Check] ✓ Using interleaved distances: "
               f"{env.n_residues} residues × {env.max_partners} partners per residue")
 
 
@@ -150,7 +151,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
         ).to(device)
         
         if config.use_bias:
-            print("[WARN] Transformer policy ignores metadynamics hill control; --use-bias is currently inactive.")
+            log_print("[WARN] Transformer policy ignores metadynamics hill control; --use-bias is currently inactive.")
 
         # Initialize transformer output uncertainties to be reasonably tight so
         # the initial policy is not effectively uniform over torsions/pairs.
@@ -170,11 +171,11 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
         # For discrete-state start runs (e.g. geom2vec+VAMP),
         # use a state-conditioned categorical policy over K states instead
         # of a continuous CV policy. The number of states matches the
-        # projector softmax dimension (config.tica_dim).
+        # projector softmax dimension (config.geom2vec_dim).
         proj_mode = str(getattr(config, "projection", "pca")).lower()
         if getattr(config, "discrete_state_starts", False) and proj_mode in {"geom2vec_vamp"}:
             from .rl import StateLogitPolicy
-            num_states = int(getattr(config, "tica_dim", 8) or 8)
+            num_states = int(getattr(config, "geom2vec_dim", 8) or 8)
             # Use a global categorical distribution over states (no feature conditioning).
             agent = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
             agent_old = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
@@ -221,12 +222,12 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
                     if baseline_cv.numel() == env.n_cvs and baseline_cv.numel() == agent.start_mu.numel():
                         agent.start_mu.copy_(baseline_cv)
                         agent_old.start_mu.copy_(baseline_cv)
-                        print(f"[Init] Initialized start_mu from environment CVs")
+                        log_print(f"[Init] Initialized start_mu from environment CVs")
                     else:
-                        print(f"[Init] CV shape mismatch: env={baseline_cv.numel()}, policy={agent.start_mu.numel()}")
+                        log_print(f"[Init] CV shape mismatch: env={baseline_cv.numel()}, policy={agent.start_mu.numel()}")
                 except Exception as e:
                     # If cv_values are unavailable, keep the default zero mean.
-                    print(f"[Init] Could not initialize start_mu from env: {e}")
+                    log_print(f"[Init] Could not initialize start_mu from env: {e}")
                 # Use a moderate angular spread (e.g., ~30 degrees) for starts.
                 init_start_std = math.pi / 6.0  # ~30°
                 init_start_log_std = math.log(init_start_std)
@@ -268,7 +269,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
                 torch.optim.AdamW(adam_params, lr=config.lr, weight_decay=0.01)
             ]
         except ImportError:
-            print("Muon optimizer not found, falling back to Adam.")
+            log_print("Muon optimizer not found, falling back to Adam.")
             policy_opts = [torch.optim.Adam(policy_params, lr=config.lr)]
     else:
         policy_opts = [torch.optim.Adam(policy_params, lr=config.lr)]
@@ -278,7 +279,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
 def initialize_projection_scorer(config: TrainingConfig, action_dim: int, args_ns) -> PCAScorer:
     """Initialize the (auxiliary) PCA scorer used for coverage diagnostics/rewards."""
 
-    proj_dim = int(getattr(config, "tica_dim", 2) or 2)
+    proj_dim = int(getattr(config, "geom2vec_dim", 2) or 2)
     return PCAScorer(
         n_cvs=action_dim,
         n_components=proj_dim,

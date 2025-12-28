@@ -141,7 +141,7 @@ def balanced_candidate_indices(
     rng: np.random.Generator,
 ) -> np.ndarray:
     """
-    DeepTICA-balanced candidate indices with NO backfill.
+    Projection-balanced candidate indices with NO backfill.
     Returns <= m indices.
     """
     labels = np.asarray(labels, dtype=np.int64).reshape(-1)
@@ -187,4 +187,3 @@ def sample_from_topk(
     p = (w / s).astype(np.float64)
     j = int(rng.choice(topk_idx.size, p=p))
     return int(topk_idx[j])
-

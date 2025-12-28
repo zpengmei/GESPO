@@ -55,7 +55,7 @@ class FeatureBuilder:
             self.cond_mean = cm.detach().cpu().numpy() if cm is not None else None
             self.cond_std = cs.detach().cpu().numpy() if cs is not None else None
 
-        # Metadata for TICA (CA indices)
+        # Metadata for projection (CA indices)
         self.ca_indices = None
         if pca_scorer and hasattr(pca_scorer, "ca_indices") and pca_scorer.ca_indices is not None:
             self.ca_indices = pca_scorer.ca_indices
@@ -140,7 +140,7 @@ class FeatureBuilder:
         return torsion_feats
 
     def build_projection_features(self, cv_vec: np.ndarray, coords_nm: Optional[np.ndarray]) -> np.ndarray:
-        """Build features for PCA/TICA Scorer.
+        """Build features for PCA/projection scorer.
         
         Returns:
             Features as 2D array [n_samples, n_features] for sklearn compatibility.

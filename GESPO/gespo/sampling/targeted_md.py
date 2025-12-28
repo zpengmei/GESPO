@@ -12,6 +12,7 @@ Design goals:
 """
 
 from __future__ import annotations
+from gespo.utils.logging import log_print
 
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -430,7 +431,7 @@ def steer_replay_to_targets(
         except Exception:
             pass
         msg += f" steps(g={int(global_steps)}, t={int(torsion_steps)}, rel={int(release_steps)})"
-        print(msg, flush=True)
+        log_print(msg, flush=True)
 
     # Stage 0: ensure torsions are off
     try:
@@ -556,7 +557,7 @@ def steer_replay_to_targets(
             except Exception:
                 pass
             if parts:
-                print(f"[TargetedMD] After globals: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
+                log_print(f"[TargetedMD] After globals: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
 
     # Stage 2: torsions.
     if has_torsions and torsion_steps > 0 and torsion_updates > 0:
@@ -600,7 +601,7 @@ def steer_replay_to_targets(
             except Exception:
                 pass
             if parts:
-                print(f"[TargetedMD] After torsions: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
+                log_print(f"[TargetedMD] After torsions: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
 
     # Optional refinement: energy minimization under active steering.
     refine_iters = int(refine_minimize_iters) if int(refine_minimize_iters) > 0 else 0
@@ -648,12 +649,12 @@ def steer_replay_to_targets(
             pass
 
         if verbose:
-            print(f"[TargetedMD] Refining with minimizeEnergy(maxIterations={refine_iters})", flush=True)
+            log_print(f"[TargetedMD] Refining with minimizeEnergy(maxIterations={refine_iters})", flush=True)
         try:
             sim.minimizeEnergy(maxIterations=refine_iters)
         except Exception as exc_min:
             if verbose:
-                print(f"[TargetedMD] Warning: minimizeEnergy refine failed ({exc_min})", flush=True)
+                log_print(f"[TargetedMD] Warning: minimizeEnergy refine failed ({exc_min})", flush=True)
 
         if verbose:
             rmsd_ref = _current_ca_rmsd_nm(sim, forces) if forces.rmsd_bias is not None else None
@@ -679,7 +680,7 @@ def steer_replay_to_targets(
             except Exception:
                 pass
             if parts:
-                print(f"[TargetedMD] After refine: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
+                log_print(f"[TargetedMD] After refine: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
 
     # Release: disable steering and relax briefly.
     try:
@@ -716,4 +717,4 @@ def steer_replay_to_targets(
         except Exception:
             pass
         if parts:
-            print(f"[TargetedMD] After release: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
+            log_print(f"[TargetedMD] After release: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)

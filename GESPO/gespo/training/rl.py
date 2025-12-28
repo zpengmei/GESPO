@@ -71,7 +71,7 @@ class GRPOAgent(nn.Module):
 class StateLogitPolicy(nn.Module):
     """
     State-conditioned categorical policy over a fixed number of discrete
-    states (e.g., VAMP/DeepTICA soft states). Used for runs where we only
+    states (e.g., geom2vec soft states). Used for runs where we only
     want to decide which basin/state to start from, with the actual
     coordinates drawn from history.
     """

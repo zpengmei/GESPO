@@ -11,6 +11,7 @@ Key differences vs the standard discrete-start loop:
 """
 
 from __future__ import annotations
+from gespo.utils.logging import log_print
 
 import argparse
 import gc
@@ -176,7 +177,7 @@ def _align_states_by_overlap(
             permutation[old_state] = new_state
             used_new.add(new_state)
 
-    print(
+    log_print(
         f"[State Alignment] Matched {len(row_ind)} populated states: {len(old_populated)} old → {len(new_populated)} new"
     )
     return permutation
@@ -207,12 +208,12 @@ def train(args: argparse.Namespace) -> None:
     torch_device = "cuda" if torch.cuda.is_available() and config.platform != "CPU" else "cpu"
     gen_device = resolve_device(config.gen_device)
 
-    print("GESPO Training (generative loop) with geom2vec VAMP + LOO rewards")
-    print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
-    print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
+    log_print("GESPO Training (generative loop) with geom2vec VAMP + LOO rewards")
+    log_print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
+    log_print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
 
     # Initialize Environments
-    print("Initializing environments...")
+    log_print("Initializing environments...")
     envs = [PeptideSampler(args, generator_device=gen_device) for _ in range(config.grp_size)]
     env_ref = envs[0]
 
@@ -249,11 +250,11 @@ def train(args: argparse.Namespace) -> None:
         res_codes = [three_to_one.get(res.name.upper(), "X") for res in ref_top.residues]
         residue_types_1d = np.array([aa_to_idx.get(code, fallback_idx) for code in res_codes], dtype=np.int64)
     except Exception as exc_rt:
-        print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
+        log_print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
         residue_types_1d = np.zeros((env_ref.n_residues,), dtype=np.int64)
 
     if residue_types_1d.shape[0] != env_ref.n_residues:
-        print(
+        log_print(
             f"[TorsionAR] Warning: residue type length {residue_types_1d.shape[0]} != env.n_residues {env_ref.n_residues}; "
             "truncating/padding."
         )
@@ -273,12 +274,12 @@ def train(args: argparse.Namespace) -> None:
     angle_mask_batch = angle_mask_1d.unsqueeze(0).expand(config.grp_size, -1, -1)
 
     # Initialize TorsionAR start policy
-    print("Initializing torsion autoregressive policy...")
+    log_print("Initializing torsion autoregressive policy...")
     torsion_ckpt = getattr(args, "torsion_ar_checkpoint", "")
     if not torsion_ckpt:
         torsion_ckpt = getattr(args, "torsion_ar_out", "")
     if torsion_ckpt and not os.path.isfile(torsion_ckpt):
-        print(f"[TorsionAR] Checkpoint '{torsion_ckpt}' not found; starting from scratch.")
+        log_print(f"[TorsionAR] Checkpoint '{torsion_ckpt}' not found; starting from scratch.")
         torsion_ckpt = ""
 
     ar_cfg: Dict[str, Any] = {}
@@ -333,7 +334,7 @@ def train(args: argparse.Namespace) -> None:
         ).to(torch_device)
         agent_old.load_state_dict(payload["state_dict"], strict=True)
         agent_old.eval()
-        print(f"[TorsionAR] Loaded pretrained policy from {torsion_ckpt}")
+        log_print(f"[TorsionAR] Loaded pretrained policy from {torsion_ckpt}")
     else:
         num_residues = env_ref.n_residues
         residue_vocab_size = int(residue_types_1d.max()) + 1
@@ -342,7 +343,7 @@ def train(args: argparse.Namespace) -> None:
         agent_old.load_state_dict(agent.state_dict())
         agent_old.eval()
         global_token_names = []
-        print("[TorsionAR] Initialized new policy (no pretrained checkpoint provided)")
+        log_print("[TorsionAR] Initialized new policy (no pretrained checkpoint provided)")
 
     policy_opts = [torch.optim.Adam(agent.parameters(), lr=config.lr)]
     optimizer = GRPOOptimizer(config, agent, agent_old, policy_opts)
@@ -379,7 +380,7 @@ def train(args: argparse.Namespace) -> None:
         agent_old_path = ckpt_dir / f"torsion_ar_old_ep_{ep_idx_1based:04d}.pt"
         torch.save({"state_dict": agent.state_dict(), "config": cfg, "epoch": ep_idx_1based}, agent_path)
         torch.save({"state_dict": agent_old.state_dict(), "config": cfg, "epoch": ep_idx_1based}, agent_old_path)
-        print(f"[TorsionAR] Saved policy checkpoints: {agent_path.name}, {agent_old_path.name}")
+        log_print(f"[TorsionAR] Saved policy checkpoints: {agent_path.name}, {agent_old_path.name}")
 
     # Checkpointing & History
     ckpt_manager = CheckpointManager(config)
@@ -536,7 +537,7 @@ def train(args: argparse.Namespace) -> None:
         loo_vamp_stats = None
         loo_vamp_stats_keys = set()
         loo_vamp_stats_signature = None
-        print(f"[LOO VAMP] Invalidated global stats ({tag}).")
+        log_print(f"[LOO VAMP] Invalidated global stats ({tag}).")
 
     def _invalidate_vamp_bin_stats(tag: str) -> None:
         nonlocal vamp_bin_mu, vamp_bin_std, vamp_bin_counts, vamp_bin_total, vamp_bin_counted_keys, vamp_bin_signature
@@ -550,7 +551,7 @@ def train(args: argparse.Namespace) -> None:
         vamp_bin_norm_ema_m1 = None
         vamp_bin_norm_ema_m2 = None
         vamp_bin_norm_ema_scale = None
-        print(f"[VAMP Bins] Invalidated stats ({tag}).")
+        log_print(f"[VAMP Bins] Invalidated stats ({tag}).")
 
     def _canon_vamp_output(z_raw: np.ndarray, *, n_states: int, perm: Optional[np.ndarray]) -> np.ndarray:
         """Return canonical VAMP output array shaped [T, n_states], applying optional permutation."""
@@ -745,12 +746,12 @@ def train(args: argparse.Namespace) -> None:
                 visited = int(np.count_nonzero(vamp_bin_counts))
                 nbins = int(bins) * int(bins)
                 total = int(vamp_bin_total)
-                print(
+                log_print(
                     f"[VAMP Bins] Seeded history ({tag}): added_trajs={added}, skipped_missing={skipped_missing}, "
                     f"visited={visited}/{nbins}, total_frames={total}"
                 )
             except Exception:
-                print(f"[VAMP Bins] Seeded history ({tag}): added_trajs={added}, skipped_missing={skipped_missing}")
+                log_print(f"[VAMP Bins] Seeded history ({tag}): added_trajs={added}, skipped_missing={skipped_missing}")
 
     def _ensure_loo_vamp_history_stats(
         *,
@@ -859,7 +860,7 @@ def train(args: argparse.Namespace) -> None:
                 added += 1
 
         if added:
-            print(
+            log_print(
                 f"[LOO VAMP] Seeded global stats ({tag}): added_trajs={added}, "
                 f"skipped_short={skipped_short}, skipped_missing={skipped_missing}"
             )
@@ -958,7 +959,7 @@ def train(args: argparse.Namespace) -> None:
             retrieval_hist_labels = None
 
         if log:
-            print(f"[Retrieval Cache] Appended {len(new_cv)} frames ({tag}); cache_frames={len(retrieval_hist_cv)}")
+            log_print(f"[Retrieval Cache] Appended {len(new_cv)} frames ({tag}); cache_frames={len(retrieval_hist_cv)}")
 
     def _retrieval_cache_cap() -> int:
         cap = int(getattr(config, "retrieval_cache_max_frames", 0) or 0)
@@ -998,7 +999,7 @@ def train(args: argparse.Namespace) -> None:
             retrieval_hist_keys = []
             retrieval_hist_frame_idx = []
             retrieval_hist_labels = None
-            print(f"[Retrieval Cache] Trimmed to 0 frames ({tag}).")
+            log_print(f"[Retrieval Cache] Trimmed to 0 frames ({tag}).")
             return
 
         retrieval_hist_cv = [retrieval_hist_cv[int(i)] for i in keep_idx]
@@ -1046,7 +1047,7 @@ def train(args: argparse.Namespace) -> None:
         keep = np.sort(np.asarray(keep, dtype=np.int64))
         _apply_retrieval_cache_keep_indices(keep, tag=tag)
 
-        print(
+        log_print(
             f"[Retrieval Cache] Capped uniformly ({tag}): frames={int(n)}→{len(retrieval_hist_cv)} "
             f"(cap={cap}, retrieval_cache_max_frames={getattr(config, 'retrieval_cache_max_frames', 0)}, "
             f"max_pca_train={getattr(config, 'max_pca_train', 0)})"
@@ -1057,7 +1058,7 @@ def train(args: argparse.Namespace) -> None:
                 for k in retrieval_hist_keys:
                     b = _key_source_bucket(str(k))
                     src_counts_after[b] = src_counts_after.get(b, 0) + 1
-                print(f"[Retrieval Cache] Sources ({tag}): before={src_counts_before} after={src_counts_after}")
+                log_print(f"[Retrieval Cache] Sources ({tag}): before={src_counts_before} after={src_counts_after}")
             except Exception:
                 pass
 
@@ -1113,13 +1114,13 @@ def train(args: argparse.Namespace) -> None:
         except Exception:
             src_counts = {}
 
-        print(
+        log_print(
             f"[Retrieval Cache] Rebuilt from history ({tag}): frames={len(retrieval_hist_cv)} "
             f"(cap={cap if cap > 0 else 'none'}, retrieval_cache_max_frames={getattr(config, 'retrieval_cache_max_frames', 0)}, "
             f"max_pca_train={getattr(config, 'max_pca_train', 0)})"
         )
         if src_counts:
-            print(f"[Retrieval Cache] Sources ({tag}): {src_counts}")
+            log_print(f"[Retrieval Cache] Sources ({tag}): {src_counts}")
 
     def _refresh_retrieval_cache_labels(tag: str, *, only_indices: Optional[np.ndarray] = None) -> None:
         """Assign VAMP state labels to the in-memory replay buffer for balanced sampling.
@@ -1135,10 +1136,10 @@ def train(args: argparse.Namespace) -> None:
             return
         if len(retrieval_hist_keys) != len(retrieval_hist_cv) or len(retrieval_hist_frame_idx) != len(retrieval_hist_cv):
             retrieval_hist_labels = np.zeros((len(retrieval_hist_cv),), dtype=np.int64)
-            print(f"[Retrieval Cache] Warning: missing replay key metadata; labels reset to zeros ({tag}).")
+            log_print(f"[Retrieval Cache] Warning: missing replay key metadata; labels reset to zeros ({tag}).")
             return
 
-        n_states = int(getattr(config, "tica_dim", 2) or 2)
+        n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
         perm = np.asarray(geom2vec_state_permutation_map, dtype=int)
         if perm.ndim != 1 or int(perm.shape[0]) != int(n_states):
             perm = np.arange(n_states, dtype=int)
@@ -1192,7 +1193,7 @@ def train(args: argparse.Namespace) -> None:
                         probs = np.pad(probs, ((0, 0), (0, n_states - probs.shape[1])), mode="constant")
                 labels_embed = np.argmax(probs, axis=1).astype(np.int64, copy=False)
             except Exception as exc_probs:
-                print(f"[Retrieval Cache] Warning: failed to compute VAMP labels for key={key} ({exc_probs})")
+                log_print(f"[Retrieval Cache] Warning: failed to compute VAMP labels for key={key} ({exc_probs})")
                 continue
 
             T = int(labels_embed.shape[0])
@@ -1211,7 +1212,7 @@ def train(args: argparse.Namespace) -> None:
 
         try:
             if idx_arr is not None:
-                print(f"[Retrieval Cache] Updated VAMP labels for {int(idx_arr.size)}/{len(labels_out)} frames ({tag}).")
+                log_print(f"[Retrieval Cache] Updated VAMP labels for {int(idx_arr.size)}/{len(labels_out)} frames ({tag}).")
                 return
             counts = np.bincount(labels_out.clip(0, n_states - 1), minlength=n_states)
             cap = _retrieval_cache_cap()
@@ -1232,7 +1233,7 @@ def train(args: argparse.Namespace) -> None:
             cap_msg = (
                 f", cap={cap if cap > 0 else 'none'}(retrieval_cache_max_frames={cfg_cap},max_pca_train={cfg_max_train})"
             )
-            print(
+            log_print(
                 f"[Retrieval Cache] Refreshed VAMP cluster labels ({tag}): "
                 f"frames={len(labels_out)}, keys={len(groups)}, pop={counts.tolist()}, empty_keys={empty_keys}{miss_msg}{cap_msg}{src_msg}"
             )
@@ -1245,8 +1246,8 @@ def train(args: argparse.Namespace) -> None:
     geom2vec_projector: Optional[Geom2VecVAMPProjector] = None
     # Linear VAMP lobe: used for continuous diagnostics / VAMP-bin exploration bonus.
     geom2vec_projector_linear: Optional[Geom2VecVAMPProjector] = None
-    geom2vec_state_permutation_map = np.arange(int(getattr(config, "tica_dim", 2) or 2), dtype=int)
-    geom2vec_state_inverse_permutation_map = np.arange(int(getattr(config, "tica_dim", 2) or 2), dtype=int)
+    geom2vec_state_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
+    geom2vec_state_inverse_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
     geom2vec_lagtime_embed = 1
     geom2vec_embed_stride = int(getattr(config, "geom2vec_embed_stride", 2) or 2)
     geom2vec_embed_batch_size = int(getattr(config, "geom2vec_embed_batch_size", 32) or 32)
@@ -1366,7 +1367,7 @@ def train(args: argparse.Namespace) -> None:
                     traj = traj_full.atom_slice(protein_indices)
                     coords_nm = np.asarray(traj.xyz, dtype=np.float32)
                 except Exception as exc2:
-                    print(f"[Geom2Vec Cache] Failed to load DCD {dcd_path}: {exc2}")
+                    log_print(f"[Geom2Vec Cache] Failed to load DCD {dcd_path}: {exc2}")
                     return None
             effective_stride = int(geom2vec_embed_stride)
             infer_stride = 1
@@ -1397,7 +1398,7 @@ def train(args: argparse.Namespace) -> None:
             )
             return rec.key
         except Exception as exc:
-            print(f"[Geom2Vec Cache] Failed to compute/store embeddings for key={key}: {exc}")
+            log_print(f"[Geom2Vec Cache] Failed to compute/store embeddings for key={key}: {exc}")
             return None
 
     geom2vec_device_str = str(getattr(config, "geom2vec_device", "") or "").strip() or str(torch_device)
@@ -1449,7 +1450,7 @@ def train(args: argparse.Namespace) -> None:
         hidden_channels=geom2vec_hidden_channels_opt,
     )
 
-    lag_raw = int(getattr(config, "tica_lagtime", 1) or 1)
+    lag_raw = int(getattr(config, "geom2vec_lagtime", 1) or 1)
     geom2vec_lagtime_embed = max(1, int(round(lag_raw / max(1, int(geom2vec_embed_stride)))))
 
     def _refresh_geom2vec_vamp(reason: str) -> None:
@@ -1459,13 +1460,13 @@ def train(args: argparse.Namespace) -> None:
         nonlocal geom2vec_lagtime_embed
 
         if geom2vec_cache is None or geom2vec_projector is None:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): projector/cache not initialized.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): projector/cache not initialized.")
             return
         if not all_epoch_data:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): no history frames available.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): no history frames available.")
             return
 
-        lag_raw_i = int(getattr(config, "tica_lagtime", 1) or 1)
+        lag_raw_i = int(getattr(config, "geom2vec_lagtime", 1) or 1)
         geom2vec_lagtime_embed = max(1, int(round(lag_raw_i / max(1, int(geom2vec_embed_stride)))))
         lag_embed = int(geom2vec_lagtime_embed)
 
@@ -1523,7 +1524,7 @@ def train(args: argparse.Namespace) -> None:
                 cursor += L_i
 
         if not all_keys:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): no trajectories could be cached.")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): no trajectories could be cached.")
             return
 
         keys_sorted = sorted(set(all_keys), key=_natural_sort_key)
@@ -1547,7 +1548,7 @@ def train(args: argparse.Namespace) -> None:
         train_keys = list(reversed(train_keys))
 
         if not train_keys:
-            print(f"[Geom2Vec Refresh] Skipped ({reason}): no cached trajectories with frames > lag ({lag_embed}).")
+            log_print(f"[Geom2Vec Refresh] Skipped ({reason}): no cached trajectories with frames > lag ({lag_embed}).")
             return
 
         old_labels_by_key: Optional[Dict[str, np.ndarray]] = None
@@ -1561,7 +1562,7 @@ def train(args: argparse.Namespace) -> None:
                 except Exception:
                     continue
 
-        n_states = int(getattr(config, "tica_dim", 2) or 2)
+        n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
         pair_stride = int(getattr(config, "geom2vec_vamp_pair_stride", 1) or 1)
         train_fraction = float(getattr(config, "geom2vec_vamp_train_fraction", 0.8) or 0.8)
         n_epochs = int(getattr(config, "geom2vec_vamp_epochs", 10) or 10)
@@ -1570,7 +1571,7 @@ def train(args: argparse.Namespace) -> None:
         weight_decay = float(getattr(config, "geom2vec_vamp_weight_decay", 0.0) or 0.0)
         optimizer_name = str(getattr(config, "geom2vec_vamp_optimizer", "Adam") or "Adam")
 
-        print(
+        log_print(
             f"[Geom2Vec Refresh] {reason}: trajs={len(train_keys)}, embed_frames~{total_embed_frames}, "
             f"lag_embed={lag_embed}, pair_stride={pair_stride}"
         )
@@ -1616,19 +1617,19 @@ def train(args: argparse.Namespace) -> None:
                         softmax_output=False,
                     )
                 except Exception as exc_lin:
-                    print(f"[Geom2Vec Refresh] Warning: failed to train linear VAMP lobe (keeping previous): {exc_lin}")
+                    log_print(f"[Geom2Vec Refresh] Warning: failed to train linear VAMP lobe (keeping previous): {exc_lin}")
         except Exception as exc:
-            print(f"[Geom2Vec Refresh] CRITICAL ERROR: Failed to train geom2vec softmax VAMP lobe: {exc}")
+            log_print(f"[Geom2Vec Refresh] CRITICAL ERROR: Failed to train geom2vec softmax VAMP lobe: {exc}")
             try:
                 outcomes = getattr(geom2vec_projector, "last_fit_outcomes", None)
                 if outcomes:
-                    print("[Geom2Vec Refresh] Fit outcomes:")
+                    log_print("[Geom2Vec Refresh] Fit outcomes:")
                     for rec in outcomes:
                         if rec.get("ok"):
                             continue
                         midx = rec.get("model_idx", "?")
                         err = rec.get("error", rec)
-                        print(f"  - model {midx}: {err}")
+                        log_print(f"  - model {midx}: {err}")
             except Exception:
                 pass
             import traceback
@@ -1640,12 +1641,12 @@ def train(args: argparse.Namespace) -> None:
             outcomes_sm = getattr(geom2vec_projector, "last_fit_outcomes", None)
             if outcomes_sm:
                 rec = outcomes_sm[0]
-                print(
+                log_print(
                     f"[Geom2Vec Refresh] Softmax fit: val={rec.get('val_score')} train={rec.get('train_score')} seed={rec.get('seed')}"
                 )
             if geom2vec_projector_linear is not None and getattr(geom2vec_projector_linear, "last_fit_outcomes", None):
                 rec = geom2vec_projector_linear.last_fit_outcomes[0]
-                print(
+                log_print(
                     f"[Geom2Vec Refresh] Linear fit: val={rec.get('val_score')} train={rec.get('train_score')} seed={rec.get('seed')}"
                 )
         except Exception:
@@ -1677,9 +1678,9 @@ def train(args: argparse.Namespace) -> None:
                     inv_perm = np.zeros_like(perm)
                     inv_perm[perm] = np.arange(len(perm))
                     geom2vec_state_inverse_permutation_map = inv_perm
-                    print(f"[Geom2Vec Refresh] Applied confusion-matrix alignment: {perm}")
+                    log_print(f"[Geom2Vec Refresh] Applied confusion-matrix alignment: {perm}")
                 except Exception as exc_align:
-                    print(f"[Geom2Vec Refresh] Warning: overlap alignment failed: {exc_align}; using identity mapping.")
+                    log_print(f"[Geom2Vec Refresh] Warning: overlap alignment failed: {exc_align}; using identity mapping.")
                     identity = np.arange(n_states, dtype=int)
                     geom2vec_state_permutation_map = identity
                     geom2vec_state_inverse_permutation_map = identity
@@ -1713,9 +1714,9 @@ def train(args: argparse.Namespace) -> None:
                     },
                     out_dir / "lobe_meta.pt",
                 )
-                print(f"[Geom2Vec Refresh] Saved lobe to {out_dir}")
+                log_print(f"[Geom2Vec Refresh] Saved lobe to {out_dir}")
             except Exception as exc_save:
-                print(f"[Geom2Vec Refresh] Warning: failed to save lobe weights/meta: {exc_save}")
+                log_print(f"[Geom2Vec Refresh] Warning: failed to save lobe weights/meta: {exc_save}")
 
         # The VAMP lobe weights (and potentially the state permutation) have changed;
         # invalidate any cached global LOO statistics so rewards stay consistent.
@@ -1724,7 +1725,7 @@ def train(args: argparse.Namespace) -> None:
         try:
             _refresh_retrieval_cache_labels(tag=f"geom2vec refresh: {reason}")
         except Exception as exc_lbl:
-            print(f"[Retrieval Cache] Warning: failed to refresh VAMP labels ({exc_lbl})")
+            log_print(f"[Retrieval Cache] Warning: failed to refresh VAMP labels ({exc_lbl})")
 
         if getattr(config, "reset_policy_on_projector_refresh", False):
             try:
@@ -1736,9 +1737,9 @@ def train(args: argparse.Namespace) -> None:
                             agent_old.logits.zero_()
                     for opt in policy_opts:
                         opt.state.clear()
-                    print("[Geom2Vec Refresh] Reset StateLogitPolicy logits to uniform after refresh.")
+                    log_print("[Geom2Vec Refresh] Reset StateLogitPolicy logits to uniform after refresh.")
             except Exception as exc_reset:
-                print(f"[Geom2Vec Refresh] Warning: failed to reset policy after refresh: {exc_reset}")
+                log_print(f"[Geom2Vec Refresh] Warning: failed to reset policy after refresh: {exc_reset}")
 
     # Load Checkpoint
     latest_ckpt, ckpt_data = ckpt_manager.load_latest()
@@ -1748,7 +1749,7 @@ def train(args: argparse.Namespace) -> None:
             all_epoch_data, env_ref, base_dir=config.snapshot_dir or "."
         )
         if imported_frames > 0:
-            print(f"[Resume] Rebuilt history from {imported_frames} frames (DCD).")
+            log_print(f"[Resume] Rebuilt history from {imported_frames} frames (DCD).")
             all_trajectory_lengths.append(imported_lens)
             traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
             if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
@@ -1765,7 +1766,7 @@ def train(args: argparse.Namespace) -> None:
         else:
             restored, restored_lens = ckpt_manager.rebuild_history_from_npz(all_epoch_data, base_dir=config.snapshot_dir or ".")
             if restored > 0:
-                print(f"[Resume] Rebuilt history from {restored} NPZ epochs.")
+                log_print(f"[Resume] Rebuilt history from {restored} NPZ epochs.")
                 all_trajectory_lengths.extend(restored_lens)
                 for lens in restored_lens:
                     all_epoch_traj_dcd_paths.append([None] * len(lens))
@@ -1788,15 +1789,15 @@ def train(args: argparse.Namespace) -> None:
                 )
             else:
                 all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
-            print(
+            log_print(
                 f"[History DCD] Imported {imported} frames; retrieval cache will be rebuilt from all loaded history before training."
             )
 
     # Discrete state dimension (number of VAMP states)
-    n_tica_components = int(getattr(config, "tica_dim", 2) or 2)
-    config.n_discrete_states = n_tica_components
-    n_discrete_states = n_tica_components
-    print("Initializing geom2vec VAMP backbone...")
+    n_state_components = int(getattr(config, "geom2vec_dim", 2) or 2)
+    config.n_discrete_states = n_state_components
+    n_discrete_states = n_state_components
+    log_print("Initializing geom2vec VAMP backbone...")
 
     # Initialize PCA scorer (for feature building)
     pca_scorer = initialize_projection_scorer(config, envs[0].n_cvs, args)
@@ -1863,7 +1864,7 @@ def train(args: argparse.Namespace) -> None:
                     )
                 else:
                     all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
-                print(f"[Anchoring] Detected existing anchoring DCDs in {source_dir}; skipped rerun ({imported} frames loaded).")
+                log_print(f"[Anchoring] Detected existing anchoring DCDs in {source_dir}; skipped rerun ({imported} frames loaded).")
                 return
 
             restored = 0
@@ -1878,10 +1879,10 @@ def train(args: argparse.Namespace) -> None:
                 for lens in restored_lens:
                     all_epoch_traj_dcd_paths.append([None] * len(lens))
                     all_epoch_traj_dcd_frame_indices.append([None] * len(lens))
-                print(f"[Anchoring] Detected existing anchoring data in {source_dir}; skipped rerun ({restored} NPZ epochs loaded).")
+                log_print(f"[Anchoring] Detected existing anchoring data in {source_dir}; skipped rerun ({restored} NPZ epochs loaded).")
                 return
 
-        print("[Anchoring] Running initial anchoring trajectories...", flush=True)
+        log_print("[Anchoring] Running initial anchoring trajectories...", flush=True)
 
         desired_traj_count = int(getattr(config, "anchoring_num_trajs", 0) or len(envs))
         if desired_traj_count <= 0:
@@ -1908,7 +1909,7 @@ def train(args: argparse.Namespace) -> None:
             else:
                 reset_cvs = env.reset(cv_targets, force_pdb_coords=False)
                 if getattr(env, "reset_failed", False) or reset_cvs is None:
-                    print("[Anchoring] Generator reset failed; falling back to PDB replay.", flush=True)
+                    log_print("[Anchoring] Generator reset failed; falling back to PDB replay.", flush=True)
                     env.reset(cv_targets, force_pdb_coords=True)
 
             h_scales = [0.0] * config.num_mixtures
@@ -1931,13 +1932,13 @@ def train(args: argparse.Namespace) -> None:
                 env.n_md_steps = original_steps
 
             if not (traj_data and is_stable):
-                print(f"[Anchoring] Trajectory {traj_idx+1}/{desired_traj_count} unstable or empty; skipping.")
+                log_print(f"[Anchoring] Trajectory {traj_idx+1}/{desired_traj_count} unstable or empty; skipping.")
                 continue
 
             epoch_data.extend(traj_data)
             traj_lengths.append(len(traj_data))
             traj_dcd_paths.append(str(dcd_path) if dcd_path else None)
-            print(f"[Anchoring] Completed trajectory {traj_idx+1}/{desired_traj_count}.")
+            log_print(f"[Anchoring] Completed trajectory {traj_idx+1}/{desired_traj_count}.")
 
         if epoch_data:
             all_epoch_data.append(epoch_data)
@@ -1963,11 +1964,11 @@ def train(args: argparse.Namespace) -> None:
                 if feat_arr.ndim > 2:
                     feat_arr = feat_arr.reshape(feat_arr.shape[0], -1)
                 pca_scorer.update_model(cv_arr, current_ep=0, features=feat_arr, trajectory_lengths=traj_lengths)
-                print("[Anchoring] Updated PCA scorer with anchoring data.")
+                log_print("[Anchoring] Updated PCA scorer with anchoring data.")
             except Exception as exc:
-                print(f"[Anchoring] PCA scorer update failed: {exc}")
+                log_print(f"[Anchoring] PCA scorer update failed: {exc}")
 
-        print("[Anchoring] Done.")
+        log_print("[Anchoring] Done.")
 
     # Optional anchoring to seed history
     _run_anchoring_round()
@@ -1979,7 +1980,7 @@ def train(args: argparse.Namespace) -> None:
         try:
             _rebuild_retrieval_cache_from_history(tag="pre-train")
         except Exception as exc_rebuild:
-            print(f"[Retrieval Cache] Warning: failed to rebuild from history ({exc_rebuild})")
+            log_print(f"[Retrieval Cache] Warning: failed to rebuild from history ({exc_rebuild})")
 
     # Warm-start projector immediately after anchoring so LOO rewards are ready for epoch 1
     if all_epoch_data and not _geom2vec_is_trained():
@@ -1988,12 +1989,12 @@ def train(args: argparse.Namespace) -> None:
     # Plotting for "this round": exclude any bootstrapped history/anchoring epochs.
     round_epoch_data_start = len(all_epoch_data)
 
-    print(f"Starting training from epoch {ep_start+1}...")
+    log_print(f"Starting training from epoch {ep_start+1}...")
 
     for ep in range(ep_start, config.episodes):
-        print(f"\n{'='*60}")
-        print(f"Starting Epoch {ep+1}/{config.episodes}")
-        print(f"{'='*60}")
+        log_print(f"\n{'='*60}")
+        log_print(f"Starting Epoch {ep+1}/{config.episodes}")
+        log_print(f"{'='*60}")
         epoch_start_time = time.time()
 
         # A. Refresh projector (every N epochs)
@@ -2005,14 +2006,14 @@ def train(args: argparse.Namespace) -> None:
             should_update = ((ep + 1) % refresh_interval == 0) or (not model_ready)
 
         if should_update and all_epoch_data:
-            print(f"[Epoch {ep+1}] Refreshing Geom2Vec VAMP lobe...")
+            log_print(f"[Epoch {ep+1}] Refreshing Geom2Vec VAMP lobe...")
             _refresh_geom2vec_vamp(reason=f"epoch {ep+1}")
             model_ready = _geom2vec_is_trained()
 
         # Ensure history-aware LOO stats match the current VAMP lobe before sampling.
         if model_ready:
             try:
-                n_states_hist = int(getattr(config, "tica_dim", 2) or 2)
+                n_states_hist = int(getattr(config, "geom2vec_dim", 2) or 2)
                 lag_hist = int(geom2vec_lagtime_embed)
                 _ensure_loo_vamp_history_stats(
                     upto_epoch_exclusive=len(all_epoch_data),
@@ -2021,17 +2022,17 @@ def train(args: argparse.Namespace) -> None:
                     tag=f"epoch {ep+1} pre-sample",
                 )
             except Exception as exc_loo_seed:
-                print(f"[LOO VAMP] Warning: failed to seed global stats ({exc_loo_seed})")
+                log_print(f"[LOO VAMP] Warning: failed to seed global stats ({exc_loo_seed})")
 
         # Enforce retrieval cache cap (uniform downsample; no VAMP-label balancing).
         if retrieval_hist_cv and retrieval_hist_coords:
             try:
                 _rebalance_retrieval_cache(tag=f"epoch {ep+1}")
             except Exception as exc_reb:
-                print(f"[Retrieval Cache] Warning: cache cap failed ({exc_reb})")
+                log_print(f"[Retrieval Cache] Warning: cache cap failed ({exc_reb})")
 
         # B. Sample torsion starts from autoregressive policy
-        print(f"[Epoch {ep+1}] Phase B: Sampling torsion starts from TorsionAR policy...")
+        log_print(f"[Epoch {ep+1}] Phase B: Sampling torsion starts from TorsionAR policy...")
 
         rand_mask = torch.zeros(config.grp_size, dtype=torch.bool, device=torch_device)
 
@@ -2079,7 +2080,7 @@ def train(args: argparse.Namespace) -> None:
                                     label = global_token_names[j] if j < len(global_token_names) else "rmsd"
                                     range_msgs.append(f"{label}=[{rmsd_min:.3f}, {rmsd_max:.3f}]")
                                 else:
-                                    print(
+                                    log_print(
                                         f"[TorsionAR][Epoch {ep+1}] Warning: RMSD range set but no RMSD token in globals; ignoring.",
                                         flush=True,
                                     )
@@ -2094,18 +2095,18 @@ def train(args: argparse.Namespace) -> None:
                                     label = global_token_names[j] if j < len(global_token_names) else "e2e"
                                     range_msgs.append(f"{label}=[{e2e_min:.3f}, {e2e_max:.3f}]")
                                 else:
-                                    print(
+                                    log_print(
                                         f"[TorsionAR][Epoch {ep+1}] Warning: E2E range set but no E2E token in globals; ignoring.",
                                         flush=True,
                                     )
                         
                         if range_msgs:
-                            print(
+                            log_print(
                                 f"[TorsionAR][Epoch {ep+1}] Using global ranges: {', '.join(range_msgs)}",
                                 flush=True,
                             )
                     except Exception as exc_ranges:
-                        print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to parse global ranges ({exc_ranges})")
+                        log_print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to parse global ranges ({exc_ranges})")
                         global_ranges = None
                 
                 start_torsions, start_globals = agent_old.sample_with_globals(
@@ -2126,16 +2127,16 @@ def train(args: argparse.Namespace) -> None:
             phi_prop = start_torsions[..., 0][angle_mask_batch[..., 0]]
             psi_prop = start_torsions[..., 1][angle_mask_batch[..., 1]]
             if phi_prop.numel() > 0 and psi_prop.numel() > 0:
-                print(
+                log_print(
                     f"[TorsionAR][Epoch {ep+1}] Proposed φ (rad): mean={phi_prop.mean().item():+.3f}, "
                     f"std={phi_prop.std().item():.3f}, min={phi_prop.min().item():+.3f}, max={phi_prop.max().item():+.3f}"
                 )
-                print(
+                log_print(
                     f"[TorsionAR][Epoch {ep+1}] Proposed ψ (rad): mean={psi_prop.mean().item():+.3f}, "
                     f"std={psi_prop.std().item():.3f}, min={psi_prop.min().item():+.3f}, max={psi_prop.max().item():+.3f}"
                 )
         except Exception as exc_prop:
-            print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute proposed torsion stats ({exc_prop})")
+            log_print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute proposed torsion stats ({exc_prop})")
 
         if start_globals is not None:
             try:
@@ -2147,17 +2148,17 @@ def train(args: argparse.Namespace) -> None:
                     unit = "nm" if key.endswith("_nm") else ("rad" if key.endswith("_rad") else "")
                     v = g[:, j]
                     if unit:
-                        print(
+                        log_print(
                             f"[TorsionAR][Epoch {ep+1}] Proposed {name} ({unit}): mean={v.mean().item():.3f}, "
                             f"std={v.std().item():.3f}, min={v.min().item():.3f}, max={v.max().item():.3f}"
                         )
                     else:
-                        print(
+                        log_print(
                             f"[TorsionAR][Epoch {ep+1}] Proposed {name}: mean={v.mean().item():.3f}, "
                             f"std={v.std().item():.3f}, min={v.min().item():.3f}, max={v.max().item():.3f}"
                         )
             except Exception as exc_g:
-                print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute global-token stats ({exc_g})")
+                log_print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute global-token stats ({exc_g})")
 
         use_retrieval = bool(getattr(config, "use_replay_resets", True)) and bool(retrieval_hist_cv) and bool(retrieval_hist_coords)
         replay_coords = None
@@ -2415,7 +2416,7 @@ def train(args: argparse.Namespace) -> None:
                 try:
                     cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)
                 except Exception as exc_cv:
-                    print(f"[TorsionAR] Warning: residue→CV mapping failed ({exc_cv}); using replay CVs.")
+                    log_print(f"[TorsionAR] Warning: residue→CV mapping failed ({exc_cv}); using replay CVs.")
                     cv_batch = chosen_cv
                 starts = torch.as_tensor(cv_batch, device=torch_device, dtype=torch.float32)
                 replay_coords = chosen_coords
@@ -2433,11 +2434,11 @@ def train(args: argparse.Namespace) -> None:
                             p_per = p[start_cluster_ids.clip(0, n_clusters - 1)]
                             bonus = (-np.log(p_per + 1e-12)).astype(np.float32)
                             start_cluster_bonus = bonus
-                            print(f"[Retrieval][Epoch {ep+1}] Start clusters: H={start_cluster_entropy:.3f} nats, counts={counts.tolist()}")
+                            log_print(f"[Retrieval][Epoch {ep+1}] Start clusters: H={start_cluster_entropy:.3f} nats, counts={counts.tolist()}")
                 except Exception as exc_sc:
-                    print(f"[Retrieval][Epoch {ep+1}] Warning: failed to compute start-cluster stats ({exc_sc})")
+                    log_print(f"[Retrieval][Epoch {ep+1}] Warning: failed to compute start-cluster stats ({exc_sc})")
             except Exception as exc_retrieval:
-                print(f"[Retrieval] Warning: retrieval starts failed ({exc_retrieval}); falling back to generator starts.")
+                log_print(f"[Retrieval] Warning: retrieval starts failed ({exc_retrieval}); falling back to generator starts.")
                 use_retrieval = False
 
         if not use_retrieval:
@@ -2446,7 +2447,7 @@ def train(args: argparse.Namespace) -> None:
             try:
                 cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)
             except Exception as exc_cv:
-                print(f"[TorsionAR] Warning: residue→CV mapping failed ({exc_cv}); falling back to random CV starts.")
+                log_print(f"[TorsionAR] Warning: residue→CV mapping failed ({exc_cv}); falling back to random CV starts.")
                 cv_batch = np.random.uniform(low=-math.pi, high=math.pi, size=(config.grp_size, env_ref.n_cvs)).astype(np.float32)
             starts = torch.as_tensor(cv_batch, device=torch_device, dtype=torch.float32)
             replay_coords = None
@@ -2463,7 +2464,7 @@ def train(args: argparse.Namespace) -> None:
                 )
                 rollout_token_entropy = ent_seq.detach().cpu().numpy().astype(np.float32)
         except Exception as exc_ent:
-            print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute token entropy ({exc_ent})")
+            log_print(f"[TorsionAR][Epoch {ep+1}] Warning: failed to compute token entropy ({exc_ent})")
             rollout_token_entropy = None
 
         try:
@@ -2523,7 +2524,7 @@ def train(args: argparse.Namespace) -> None:
                 traj_dcd_frame_indices=traj_dcd_frame_idx,
             )
         except Exception as exc_append:
-            print(f"[Retrieval Cache] Warning: append failed: {exc_append}")
+            log_print(f"[Retrieval Cache] Warning: append failed: {exc_append}")
 
         # D. Compute LOO VAMP rewards from the softmax VAMP lobe outputs (probabilities).
         loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
@@ -2533,7 +2534,7 @@ def train(args: argparse.Namespace) -> None:
             if model_ready and geom2vec_cache is not None and geom2vec_projector is not None:
                 try:
                     lag_embed = int(geom2vec_lagtime_embed)
-                    n_states = int(getattr(config, "tica_dim", 2) or 2)
+                    n_states = int(getattr(config, "geom2vec_dim", 2) or 2)
 
                     vamp_bin_ent_coef = float(getattr(config, "vamp_bin_entropy_coef", -1.0) or -1.0)
                     if vamp_bin_ent_coef < 0:
@@ -2678,15 +2679,15 @@ def train(args: argparse.Namespace) -> None:
 
                         try:
                             visited = int(np.count_nonzero(vamp_bin_counts))
-                            print(
+                            log_print(
                                 f"[VAMP Bins - Epoch {ep+1}] bonus_mean={float(bonuses.mean()):.4f} "
                                 f"visited={visited}/{nbins} total_frames={int(vamp_bin_total)}"
                             )
-                            print("  Per-trajectory bin bonuses (mean 1/sqrt(count+1)):")
+                            log_print("  Per-trajectory bin bonuses (mean 1/sqrt(count+1)):")
                             for i in range(config.grp_size):
                                 if frame_counts[i] <= 0:
                                     continue
-                                print(
+                                log_print(
                                     f"    Traj {i:2d}: bonus={float(bonuses[i]):+.4f} frames={int(frame_counts[i])}"
                                 )
                         except Exception:
@@ -2721,8 +2722,8 @@ def train(args: argparse.Namespace) -> None:
                     loo_vamp_rewards = contribs.astype(np.float32, copy=False)
                     loo_vamp_contributions = contribs.astype(np.float32, copy=False)
 
-                    print(f"\n[LOO VAMP Statistics - Epoch {ep+1}]")
-                    print(f"  Baseline VAMP-2 (history+epoch trajectories): {vamp_baseline:.4f}")
+                    log_print(f"\n[LOO VAMP Statistics - Epoch {ep+1}]")
+                    log_print(f"  Baseline VAMP-2 (history+epoch trajectories): {vamp_baseline:.4f}")
 
                     total_pairs = int(getattr(loo_vamp_stats, "n_samples", 0) or 0)
                     if total_pairs > 0:
@@ -2730,24 +2731,24 @@ def train(args: argparse.Namespace) -> None:
                             stride_eff = int(geom2vec_embed_stride)
                         except Exception:
                             stride_eff = 0
-                        print(
+                        log_print(
                             f"  Total transition pairs (T-lag): {total_pairs} "
                             f"(lag_embed={int(lag_embed)}, embed_stride={stride_eff})"
                         )
 
-                    print("  Per-trajectory contributions (delta_i = S_all - S_minus_i):")
+                    log_print("  Per-trajectory contributions (delta_i = S_all - S_minus_i):")
                     for i in range(config.grp_size):
                         if pair_counts[i] <= 0:
                             continue
                         frac = float(pair_counts[i]) / float(total_pairs) if total_pairs > 0 else 0.0
                         raw_per_pair = float(contribs[i]) / float(pair_counts[i]) if pair_counts[i] > 0 else 0.0
-                        print(
+                        log_print(
                             f"    Traj {i:2d}: raw={float(contribs[i]):+.4f}  "
                             f"pairs={int(pair_counts[i])} ({frac:.2%})  raw/pair={raw_per_pair:+.2e}  "
                             f"score={float(loo_vamp_rewards[i]):+.4f}"
                         )
                 except Exception as exc:
-                    print(f"[LOO VAMP] Warning: Failed to compute geom2vec LOO rewards: {exc}")
+                    log_print(f"[LOO VAMP] Warning: Failed to compute geom2vec LOO rewards: {exc}")
                     import traceback
 
                     traceback.print_exc()
@@ -2772,7 +2773,7 @@ def train(args: argparse.Namespace) -> None:
             if loo_vamp_rewards is not None and np.any(np.abs(loo_vamp_rewards) > 1e-8):
                 loo_vamp_tensor = torch.tensor(loo_vamp_rewards, device=torch_device, dtype=torch.float32)
                 combined_rewards = loo_weight * loo_vamp_tensor
-                print(f"[Rewards] Using LOO VAMP only (weight={loo_weight:.2f}): loo_mean={loo_vamp_tensor.mean():.4f}")
+                log_print(f"[Rewards] Using LOO VAMP only (weight={loo_weight:.2f}): loo_mean={loo_vamp_tensor.mean():.4f}")
             else:
                 combined_rewards = torch.zeros_like(launch_rewards)
 
@@ -2781,12 +2782,12 @@ def train(args: argparse.Namespace) -> None:
                 combined_rewards = combined_rewards + start_cluster_ent_coef * bonus_tensor
                 try:
                     h_val = float(start_cluster_entropy) if start_cluster_entropy is not None else float("nan")
-                    print(
+                    log_print(
                         f"[Rewards] Added start-cluster entropy bonus: coef={start_cluster_ent_coef:.2e}, "
                         f"H={h_val:.3f}, bonus_mean={bonus_tensor.mean().item():.4f}"
                     )
                 except Exception:
-                    print(f"[Rewards] Added start-cluster entropy bonus (coef={start_cluster_ent_coef:.2e}).")
+                    log_print(f"[Rewards] Added start-cluster entropy bonus (coef={start_cluster_ent_coef:.2e}).")
 
             if vamp_bin_ent_coef > 0 and vamp_bin_bonus is not None:
                 bonus_raw = np.asarray(vamp_bin_bonus, dtype=np.float32)
@@ -2858,14 +2859,14 @@ def train(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
                 try:
-                    print(
+                    log_print(
                         f"[Rewards] Added VAMP-bin bonus: coef={vamp_bin_ent_coef:.2e}, "
                         f"raw_mean={bonus_raw_mean:.4f} raw_std={bonus_raw_std:.4f} "
                         f"ema_beta={ema_beta:.2f} norm_std={std_use:.4f} "
                         f"scale={target_scale:.3e} norm_mean={bonus_tensor.mean().item():+.4f}"
                     )
                 except Exception:
-                    print(f"[Rewards] Added VAMP-bin bonus (coef={vamp_bin_ent_coef:.2e}).")
+                    log_print(f"[Rewards] Added VAMP-bin bonus (coef={vamp_bin_ent_coef:.2e}).")
 
             reward_tensors["launch"] = combined_rewards
             try:
@@ -2896,18 +2897,18 @@ def train(args: argparse.Namespace) -> None:
 
             if config.sync_interval > 0 and (ep + 1) % config.sync_interval == 0:
                 agent_old.load_state_dict(agent.state_dict())
-                print(f"[Policy] Synced old policy at epoch {ep+1}")
+                log_print(f"[Policy] Synced old policy at epoch {ep+1}")
         else:
             update_stats = {}
 
-        print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
-        print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
+        log_print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
+        log_print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
 
         if rollout_token_entropy is not None and rollout_token_entropy.size > 0:
             try:
                 ent_mean = float(np.mean(rollout_token_entropy))
                 ent_std = float(np.std(rollout_token_entropy))
-                print(f"[TorsionAR][Epoch {ep+1}] Token entropy (φ/ψ, nats/token): mean={ent_mean:.3f}, std={ent_std:.3f}")
+                log_print(f"[TorsionAR][Epoch {ep+1}] Token entropy (φ/ψ, nats/token): mean={ent_mean:.3f}, std={ent_std:.3f}")
             except Exception:
                 pass
 
@@ -2938,7 +2939,7 @@ def train(args: argparse.Namespace) -> None:
             try:
                 _save_torsion_ar_policy(ep + 1)
             except Exception as exc_ar_save:
-                print(f"[TorsionAR] Warning: failed to save torsion AR checkpoint: {exc_ar_save}")
+                log_print(f"[TorsionAR] Warning: failed to save torsion AR checkpoint: {exc_ar_save}")
 
         if config.plot_freq > 0 and (ep + 1) % config.plot_freq == 0:
             all_cv_samples = [item[0] for epoch_data in all_epoch_data for item in epoch_data]
@@ -2958,9 +2959,9 @@ def train(args: argparse.Namespace) -> None:
                     vamp_bin_total=int(vamp_bin_total),
                 )
             except Exception as exc_plot:
-                print(f"[Plot] Warning: summary plot failed: {exc_plot}")
+                log_print(f"[Plot] Warning: summary plot failed: {exc_plot}")
 
         elapsed = time.time() - epoch_start_time
-        print(f"[Epoch {ep+1}] Complete in {elapsed:.1f}s.")
+        log_print(f"[Epoch {ep+1}] Complete in {elapsed:.1f}s.")
 
         gc.collect()

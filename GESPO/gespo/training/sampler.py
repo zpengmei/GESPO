@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from gespo.utils.logging import log_print
 
 from ..config import TrainingConfig
 from .rewards import RewardCalculator
@@ -137,7 +138,7 @@ class Sampler:
         active_mask_list = []
         svd_reset_flags = []
         r_launch_vals = []
-        print(f"Epoch {ep+1}/{self.config.episodes} - Resetting walkers...")
+        log_print(f"Epoch {ep+1}/{self.config.episodes} - Resetting walkers...")
         
         svd_logged = False
         svd_triggered = False
@@ -199,7 +200,7 @@ class Sampler:
                 svd_reset_flags.append(False)
                 active_mask_list.append(False)
                 r_launch_vals.append(0.0)
-                print(f"  Walker {idx:02d} requested empty replay state; skipping reset and launch.")
+                log_print(f"  Walker {idx:02d} requested empty replay state; skipping reset and launch.")
                 continue
 
             if explicit_coords is not None:
@@ -224,7 +225,7 @@ class Sampler:
             if has_svd_issue:
                 env.reset_failed = True
                 if not svd_logged:
-                    print("[SVD Guard] Immediate trigger: detected 'SVD did not converge' during reset; policy refresh running now.")
+                    log_print("[SVD Guard] Immediate trigger: detected 'SVD did not converge' during reset; policy refresh running now.")
                     svd_logged = True
                 svd_triggered = True
             # Drop walkers whose reset failed (e.g., geometry/SVD issues).
@@ -233,7 +234,7 @@ class Sampler:
             active_mask_list.append(not failed)
             
             if failed:
-                print(f"  Walker {idx:02d} reset failed or dropped; skipping.")
+                log_print(f"  Walker {idx:02d} reset failed or dropped; skipping.")
                 r_launch_vals.append(0.0)
                 continue
             
@@ -286,7 +287,7 @@ class Sampler:
         valid_mask = (~rand_mask) & active_mask
         num_active = int(active_mask.sum().item())
         
-        print(f"Epoch {ep+1}/{self.config.episodes} - Launch rewards: {r_launch.tolist()} (active: {num_active}/{self.config.grp_size})")
+        log_print(f"Epoch {ep+1}/{self.config.episodes} - Launch rewards: {r_launch.tolist()} (active: {num_active}/{self.config.grp_size})")
 
         # 2. Sampling Loop
         n_walkers = len(self.envs)
@@ -335,7 +336,7 @@ class Sampler:
                 gpu_id = idx % n_gpus
                 gpu_to_walkers[gpu_id].append(idx)
             
-            print(f"[Multi-GPU] Sampling with {n_gpus} GPUs")
+            log_print(f"[Multi-GPU] Sampling with {n_gpus} GPUs")
             
             # Thread-safe containers for metrics
             metrics_lock = threading.Lock()

@@ -422,9 +422,9 @@ class ProjectionConfig:
     novelty_traj_weight: float = 1.0
     max_pca_train: int = 0
     anchor_balance_weight: float = 1.0
-    tica_lagtime: int = 20
-    tica_dim: int = 2
-    tica_start_transition_weight: float = 0.0
+    geom2vec_lagtime: int = 20
+    geom2vec_dim: int = 2
+    geom2vec_start_transition_weight: float = 0.0
     loo_vamp_exploration_coef: float = 0.0
     loo_vamp_use_ucb: bool = False
     disable_vamp_ensemble: bool = False
@@ -465,7 +465,7 @@ class ProjectionConfig:
         )
         g_proj.add_argument("--pca-bins", type=int, default=50, help="Grid bins for novelty.")
         g_proj.add_argument("--pca-completion-threshold", type=float, default=0.8, help="Threshold for PCA readiness.")
-        g_proj.add_argument("--pca-refresh-interval", type=int, default=1, help="Epochs between PCA/TICA updates.")
+        g_proj.add_argument("--pca-refresh-interval", type=int, default=1, help="Epochs between PCA/projection updates.")
         g_proj.add_argument("--pca-reward-weight", type=float, default=1.0, help="Weight for coverage reward.")
         g_proj.add_argument("--novelty-launch-weight", type=float, default=1.0, help="Weight for launch novelty.")
         g_proj.add_argument("--novelty-traj-weight", type=float, default=1.0, help="Weight for trajectory novelty.")
@@ -516,23 +516,23 @@ class ProjectionConfig:
 
         g_vamp = parser.add_argument_group("Geom2Vec VAMP Lobe")
         g_vamp.add_argument(
-            "--tica-dim",
-            "--n-states",
-            dest="tica_dim",
+            "--geom2vec-dim",
+            "--geom2vec-n-states",
+            dest="geom2vec_dim",
             type=int,
             default=2,
             help="Number of discrete states (K) for the geom2vec VAMP lobe.",
         )
         g_vamp.add_argument(
-            "--tica-lagtime",
-            dest="tica_lagtime",
+            "--geom2vec-lagtime",
+            dest="geom2vec_lagtime",
             type=int,
             default=20,
             help="Lagtime (in MD steps) used to form time-lagged pairs for the geom2vec VAMP lobe.",
         )
         g_vamp.add_argument(
-            "--tica-start-transition-weight",
-            dest="tica_start_transition_weight",
+            "--geom2vec-start-transition-weight",
+            dest="geom2vec_start_transition_weight",
             type=float,
             default=1.0,
             help="Weight for a start-to-end displacement bonus in projection space (optional).",
@@ -852,9 +852,9 @@ class TrainingConfig:
         "novelty_traj_weight": ("projection", "novelty_traj_weight"),
         "max_pca_train": ("projection", "max_pca_train"),
         "anchor_balance_weight": ("projection", "anchor_balance_weight"),
-        "tica_lagtime": ("projection", "tica_lagtime"),
-        "tica_dim": ("projection", "tica_dim"),
-        "tica_start_transition_weight": ("projection", "tica_start_transition_weight"),
+        "geom2vec_lagtime": ("projection", "geom2vec_lagtime"),
+        "geom2vec_dim": ("projection", "geom2vec_dim"),
+        "geom2vec_start_transition_weight": ("projection", "geom2vec_start_transition_weight"),
         "loo_vamp_exploration_coef": ("projection", "loo_vamp_exploration_coef"),
         "loo_vamp_use_ucb": ("projection", "loo_vamp_use_ucb"),
         "disable_vamp_ensemble": ("projection", "disable_vamp_ensemble"),
@@ -1060,9 +1060,9 @@ class TrainingConfig:
                 novelty_traj_weight=get("novelty_traj_weight", 1.0),
                 max_pca_train=get("max_pca_train", 0),
                 anchor_balance_weight=get("anchor_balance_weight", 0.0),
-                tica_lagtime=get("tica_lagtime", 20),
-                tica_dim=get("tica_dim", 2),
-                tica_start_transition_weight=get("tica_start_transition_weight", 0.0),
+                geom2vec_lagtime=get("geom2vec_lagtime", 20),
+                geom2vec_dim=get("geom2vec_dim", 2),
+                geom2vec_start_transition_weight=get("geom2vec_start_transition_weight", 0.0),
                 loo_vamp_exploration_coef=float(get("loo_vamp_exploration_coef", 0.0) or 0.0),
                 loo_vamp_use_ucb=bool(get("loo_vamp_use_ucb", False)),
                 disable_vamp_ensemble=bool(get("disable_vamp_ensemble", False)),
