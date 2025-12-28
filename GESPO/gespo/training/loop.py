@@ -11,7 +11,6 @@ This implementation features:
 - Comprehensive plotting and analysis
 """
 
-import os
 import gc
 import time
 import math
@@ -22,9 +21,7 @@ from typing import List, Any, Optional, Tuple, Dict, Set
 import numpy as np
 import torch
 import mdtraj as md
-import openmm
 from openmm import unit
-from openmm.app import Modeller, Simulation
 
 from ..config import TrainingConfig
 from ..sampling import PeptideSampler
@@ -35,10 +32,9 @@ from .features import FeatureBuilder
 from .sampler import Sampler
 from .checkpointing import CheckpointManager
 from .optimization import GRPOOptimizer
-from .scorer import VendiNovelty
 from .rewards import RewardCalculator
 from ..utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
-from ..utils.geometry import _dihedral, find_all_backbone_dihedrals, calculate_rmsd
+from ..utils.geometry import _dihedral
 from .geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
 from .geom2vec_utils import align_states_by_overlap
 from .stats import SufficientStatistics
@@ -70,10 +66,10 @@ def train(args: argparse.Namespace):
     torch_device = "cuda" if torch.cuda.is_available() and config.platform != "CPU" else "cpu"
     gen_device = resolve_device(config.gen_device)
         
-    print(f"GESPO Training with LOO VAMP + Ensemble Uncertainty")
+    print("GESPO Training with LOO VAMP (Geom2Vec, single-model)")
     print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
     print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
-    print(f"Ensemble Models: 3, Exploration Coef: 1.0")
+    print("Geom2Vec VAMP lobe: single model (no UCB)")
     
     # Initialize Environments
     print("Initializing environments...")
@@ -85,7 +81,7 @@ def train(args: argparse.Namespace):
     
     # Initialize Policy
     print("Initializing policy...")
-    agent, agent_old, policy_opts, policy_params = initialize_policy(config, envs, torch_device)
+    agent, agent_old, policy_opts, _ = initialize_policy(config, envs, torch_device)
     if not (isinstance(agent, StateLogitPolicy) and isinstance(agent_old, StateLogitPolicy)):
         raise RuntimeError("Discrete state starts require StateLogitPolicy for both current and old policies")
     optimizer = GRPOOptimizer(config, agent, agent_old, policy_opts)
@@ -100,7 +96,6 @@ def train(args: argparse.Namespace):
     # history_dcd_stride or RMSD filtering). For trajectories produced by the
     # current run, this is typically None (implies 0..L-1).
     all_epoch_traj_dcd_frame_indices: List[List[Optional[np.ndarray]]] = []
-    history_warm_started = False
     ep_start = 0
 
     # Global (history-aware) LOO-VAMP sufficient statistics so trajectory rewards reflect
