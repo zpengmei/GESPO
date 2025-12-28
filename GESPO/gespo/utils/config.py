@@ -5,9 +5,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import logging
 
 from .._imports import argparse, np, torch
 
+logger = logging.getLogger(__name__)
 
 class RunConfigurer:
     """Tracks parsed CLI arguments for printing and optional JSON logging."""
@@ -75,10 +77,10 @@ class RunConfigurer:
         return lines
 
     def print_summary(self) -> None:
-        print("\n=== Configuration Summary ===")
+        logger.info("=== Configuration Summary ===")
         for line in self.formatted_lines():
-            print(line)
-        print("=============================\n")
+            logger.info(line)
+        logger.info("=============================")
 
     def dump(self, filename: Optional[str] = None) -> Optional[Path]:
         if self.log_dir is None:
