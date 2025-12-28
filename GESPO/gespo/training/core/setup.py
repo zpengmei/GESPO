@@ -3,9 +3,9 @@ import numpy as np
 import os
 import math
 from typing import Tuple, List, Any
-from ..config import TrainingConfig
-from ..sampling import PeptideSampler
-from .rl import GRPOAgent, ResidueTransformerPolicy
+from ...config import TrainingConfig
+from ...sampling import PeptideSampler
+from ..policies.rl import GRPOAgent, ResidueTransformerPolicy
 from .scorer import VendiNovelty, PCAScorer
 from gespo.utils.logging import log_print
 
@@ -174,7 +174,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
         # projector softmax dimension (config.geom2vec_dim).
         proj_mode = str(getattr(config, "projection", "pca")).lower()
         if getattr(config, "discrete_state_starts", False) and proj_mode in {"geom2vec_vamp"}:
-            from .rl import StateLogitPolicy
+            from ..policies.rl import StateLogitPolicy
             num_states = int(getattr(config, "geom2vec_dim", 8) or 8)
             # Use a global categorical distribution over states (no feature conditioning).
             agent = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
@@ -260,7 +260,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
     policy_params = list(agent.parameters())
     if config.use_muon:
         try:
-            from ..utils.muon import Muon
+            from ...utils.muon import Muon
             # Split params
             muon_params = [p for p in agent.parameters() if p.ndim >= 2]
             adam_params = [p for p in agent.parameters() if p.ndim < 2]

@@ -6,8 +6,8 @@ import random
 import mdtraj as md
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
-from ..config import TrainingConfig
-from ..utils.geometry import calculate_rmsd
+from ...config import TrainingConfig
+from ...utils.geometry import calculate_rmsd
 from simtk.unit import nanometer, kelvin
 from gespo.utils.logging import log_print
 

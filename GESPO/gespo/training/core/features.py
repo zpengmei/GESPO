@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Optional
-from ..config import TrainingConfig
+from ...config import TrainingConfig
 
 class FeatureBuilder:
     """

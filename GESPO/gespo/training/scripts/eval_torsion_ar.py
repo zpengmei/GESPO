@@ -9,7 +9,7 @@ from gespo.utils.logging import log_print
 import numpy as np
 import torch
 
-from .rl import TorsionARPolicy
+from ..policies.rl import TorsionARPolicy
 from .pretrain_torsion_ar import _build_torsion_dataset_from_dcd, _load_npz_dataset
 
 

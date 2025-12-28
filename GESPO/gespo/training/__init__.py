@@ -4,8 +4,8 @@ This module intentionally avoids importing heavy simulation dependencies (e.g.
 OpenMM) at import time. Training loops are imported lazily inside `train()`.
 """
 
-from .rl import GRPOAgent, ResidueTransformerPolicy
-from .scorer import PCAScorer, VendiNovelty, featurize_for_pca, vendi_score
+from .policies.rl import GRPOAgent, ResidueTransformerPolicy
+from .core.scorer import PCAScorer, VendiNovelty, featurize_for_pca, vendi_score
 
 
 def train(args):

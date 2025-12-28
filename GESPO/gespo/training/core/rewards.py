@@ -4,7 +4,7 @@ from typing import Optional, Tuple, List
 
 import numpy as np
 
-from ..config import TrainingConfig
+from ...config import TrainingConfig
 
 
 class RewardCalculator:

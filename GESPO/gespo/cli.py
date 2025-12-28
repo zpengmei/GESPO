@@ -176,7 +176,7 @@ def main():
 
     # Offline TorsionARPolicy pretraining
     if getattr(args, "pretrain_torsion_ar", ""):
-        from .training.pretrain_torsion_ar import pretrain_torsion_ar
+        from .training.scripts.pretrain_torsion_ar import pretrain_torsion_ar
         source_path = args.pretrain_torsion_ar
         out_path = args.torsion_ar_out
         epochs = int(getattr(args, "torsion_ar_epochs", 10) or 10)

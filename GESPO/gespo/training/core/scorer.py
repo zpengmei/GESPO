@@ -1,6 +1,6 @@
 """Novelty scoring (Vendi) and PCA-based exploration utilities."""
 from typing import Tuple
-from .._imports import *
+from ..._imports import *
 from gespo.utils.logging import log_print
 
 def featurize_for_pca(cv_data: np.ndarray) -> np.ndarray:
