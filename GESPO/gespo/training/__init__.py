@@ -4,8 +4,8 @@ This module intentionally avoids importing heavy simulation dependencies (e.g.
 OpenMM) at import time. Training loops are imported lazily inside `train()`.
 """
 
-from .rl import GRPOAgent, ResidueTransformerPolicy
-from .scorer import PCAScorer, VendiNovelty, featurize_for_pca, vendi_score
+from .policies.rl import GRPOAgent, ResidueTransformerPolicy
+from .core.scorer import PCAScorer, VendiNovelty, featurize_for_pca, vendi_score
 
 
 def train(args):
@@ -16,12 +16,12 @@ def train(args):
     runs the torsion-autoregressive generative loop.
     """
     if getattr(args, "generative_loop", False):
-        from . import loop_generative as _loop_generative
+        from .loops import generative as _loop_generative
 
         _loop_generative.train(args)
         return
 
-    from . import loop as _loop_standard
+    from .loops import standard as _loop_standard
 
     _loop_standard.train(args)
 

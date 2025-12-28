@@ -7,9 +7,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from gespo.utils.logging import log_print
 
-from ..config import TrainingConfig
+from ...config import TrainingConfig
 from .rewards import RewardCalculator
-from ..utils.constants import MOLAR_GAS_CONSTANT_R
+from ...utils.constants import MOLAR_GAS_CONSTANT_R
 from openmm.unit import kilojoule_per_mole, kelvin
 
 class Sampler:

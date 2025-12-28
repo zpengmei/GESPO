@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from typing import List, Dict, Any, Tuple, Optional
-from ..config import TrainingConfig
+from ...config import TrainingConfig
 
 class GRPOOptimizer:
     """

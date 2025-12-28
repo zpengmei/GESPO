@@ -1,7 +1,7 @@
 """Plotting utilities: Ramachandran and exploration summary panels."""
 from .._imports import *
 from .geometry import calculate_rmsd
-from ..training.scorer import featurize_for_pca
+from ..training.core.scorer import featurize_for_pca
 import os
 from gespo.utils.logging import log_print
 

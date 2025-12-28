@@ -1,6 +1,6 @@
 """Reinforcement learning policies for proposing metadynamics hills or CV targets."""
-from .._imports import *
-from ..models.transformer import PositionalEncoding, TransformerEncoder
+from ..._imports import *
+from ...models.transformer import PositionalEncoding, TransformerEncoder
 from torch.distributions import VonMises, LogNormal, Categorical, Normal
 import torch.nn.functional as F
 
