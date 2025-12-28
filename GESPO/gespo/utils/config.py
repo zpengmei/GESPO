@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .._imports import argparse, np, torch
+from ..config import TrainingConfig
 
 
 class RunConfigurer:
@@ -17,11 +19,31 @@ class RunConfigurer:
         self.log_dir = Path(log_dir).expanduser().resolve() if log_dir else None
 
     def as_dict(self) -> dict:
-        return {key: getattr(self.args, key) for key in sorted(vars(self.args))}
+        if isinstance(self.args, TrainingConfig) or is_dataclass(self.args):
+            return self.args.to_dict() if hasattr(self.args, "to_dict") else asdict(self.args)
+        try:
+            config = TrainingConfig.from_args(self.args)
+            return config.to_dict()
+        except Exception:
+            return {key: getattr(self.args, key) for key in sorted(vars(self.args))}
 
     def formatted_lines(self) -> list[str]:
         config_dict = self.as_dict()
-        lines = [f"{key:24s}: {config_dict[key]}" for key in config_dict]
+        if not isinstance(config_dict, dict):
+            return [str(config_dict)]
+
+        if not any(isinstance(value, dict) for value in config_dict.values()):
+            return [f"{key:24s}: {config_dict[key]}" for key in sorted(config_dict)]
+
+        lines = []
+        for section, values in config_dict.items():
+            if isinstance(values, dict):
+                lines.append(f"[{section}]")
+                for key, value in values.items():
+                    lines.append(f"  {key:22s}: {value}")
+            else:
+                lines.append(f"{section:24s}: {values}")
+
         # Append generator/dataset metadata if available for clarity
         extra = []
         try:
@@ -30,9 +52,11 @@ class RunConfigurer:
                 try:
                     ckpt = torch.load(ckpt_path, map_location="cpu")
                     cfg = ckpt.get("config", {}) or {}
+
                     def add_ck(key):
                         if key in cfg:
                             extra.append((f"ckpt.{key}", cfg[key]))
+
                     for k in (
                         "conditioning_mode",
                         "cond_injection_mode",
@@ -49,6 +73,7 @@ class RunConfigurer:
             if data_path:
                 try:
                     data = np.load(data_path)
+
                     def get_arr(name):
                         if name in data.files:
                             val = data.get(name)
@@ -57,6 +82,7 @@ class RunConfigurer:
                             except Exception:
                                 return val
                         return None
+
                     cmode = get_arr("conditioning_mode")
                     if cmode is not None:
                         extra.append(("data.conditioning_mode", cmode))
