@@ -29,20 +29,18 @@ from ...sampling import PeptideSampler
 from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
 from ...utils.geometry import _dihedral
-
-# Local imports
-from ..core.setup import initialize_policy, initialize_projection_scorer
+from ..setup import initialize_policy, initialize_projection_scorer
 from .anchoring import run_anchoring_round
 from .geom2vec_refresh import PolicyResetHandles, refresh_geom2vec_vamp
-from ..policies.rl import StateLogitPolicy
-from ..core.features import FeatureBuilder
-from ..core.sampler import Sampler
-from ..core.checkpointing import CheckpointManager
-from ..core.optimization import GRPOOptimizer
-from ..core.rewards import RewardCalculator
+from ..rl import StateLogitPolicy
+from ..features import FeatureBuilder
+from ..sampler import Sampler
+from ..checkpointing import CheckpointManager
+from ..optimization import GRPOOptimizer
+from ..rewards import RewardCalculator
 from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
-from ..geom2vec.utils import align_states_by_overlap
-from ..core.stats import SufficientStatistics
+from ..geom2vec_utils import align_states_by_overlap
+from ..stats import SufficientStatistics
 
 
 def train(args: argparse.Namespace):

@@ -9,8 +9,7 @@ import numpy as np
 
 from gespo.utils.logging import log_print
 
-# Local imports
-from ..core.checkpointing import CheckpointManager
+from ..checkpointing import CheckpointManager
 from ...config import TrainingConfig
 from ...sampling import PeptideSampler
 

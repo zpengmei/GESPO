@@ -34,21 +34,19 @@ from ...utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices
 from ...utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
 from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_analysis_summary, plot_ramachandran_by_residue
-
-# Local imports
-from ..core.checkpointing import CheckpointManager
-from ..core.features import FeatureBuilder
+from ..checkpointing import CheckpointManager
+from ..features import FeatureBuilder
 from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
-from ..geom2vec.utils import align_states_by_overlap
-from ..core.optimization import GRPOOptimizer
-from ..core.rewards import RewardCalculator
-from ..policies.rl import StateLogitPolicy, TorsionARPolicy
-from ..core.sampler import Sampler
-from ..core.setup import initialize_projection_scorer
-from ..core.stats import SufficientStatistics
+from ..geom2vec_utils import align_states_by_overlap
+from ..optimization import GRPOOptimizer
+from ..rewards import RewardCalculator
+from ..rl import StateLogitPolicy, TorsionARPolicy
+from ..sampler import Sampler
+from ..setup import initialize_projection_scorer
+from ..stats import SufficientStatistics
 from .anchoring import run_anchoring_round
 from .geom2vec_refresh import PolicyResetHandles, refresh_geom2vec_vamp
-from ..retrieval.torsion_retrieval import (
+from ..torsion_retrieval import (
     balanced_candidate_indices,
     compute_support_threshold,
     embed_phi_psi_from_cv_batch,
