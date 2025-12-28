@@ -86,9 +86,13 @@ def build_residue_metadata(
     aa_order = "ACDEFGHIKLMNPQRSTVWY"
     aa_to_idx = {aa: i for i, aa in enumerate(aa_order)}
     fallback_idx = len(aa_to_idx)
-    ref_top = md.load(config.pdb).topology
-    res_codes = [three_to_one.get(res.name.upper(), "X") for res in ref_top.residues]
-    residue_types_1d = np.array([aa_to_idx.get(code, fallback_idx) for code in res_codes], dtype=np.int64)
+    try:
+        ref_top = md.load(config.pdb).topology
+        res_codes = [three_to_one.get(res.name.upper(), "X") for res in ref_top.residues]
+        residue_types_1d = np.array([aa_to_idx.get(code, fallback_idx) for code in res_codes], dtype=np.int64)
+    except Exception as exc_rt:
+        log_print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
+        residue_types_1d = np.zeros((env_ref.n_residues,), dtype=np.int64)
 
     if residue_types_1d.shape[0] != env_ref.n_residues:
         log_print(
