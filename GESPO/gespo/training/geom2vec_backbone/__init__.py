@@ -1,7 +1,7 @@
 """Geom2vec backbone integration utilities for GESPO.
 
 This subpackage holds the planned building blocks for using geom2vec embeddings
-as the default DeepTICA/VAMP backbone inside GESPO.
+as the default geom2vec backbone inside GESPO.
 """
 
 from .cache import EmbeddingCache, EmbeddingRecord

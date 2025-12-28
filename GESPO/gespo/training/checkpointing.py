@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from ..config import TrainingConfig
 from ..utils.geometry import calculate_rmsd
 from simtk.unit import nanometer, kelvin
+from gespo.utils.logging import log_print
 
 class CheckpointManager:
     """Handles checkpoint saving, loading, and history bootstrapping."""
@@ -61,7 +62,7 @@ class CheckpointManager:
         with tmp.open('wb') as f:
             torch.save(ckpt, f, pickle_protocol=4)
         tmp.replace(path)
-        print(f"[Checkpoint] Saved to {path}")
+        log_print(f"[Checkpoint] Saved to {path}")
 
         # Also save a standalone policy payload for convenience (easy loading
         # without parsing the full checkpoint dict).
@@ -106,9 +107,9 @@ class CheckpointManager:
             with policy_tmp.open("wb") as f:
                 torch.save(policy_payload, f, pickle_protocol=4)
             policy_tmp.replace(policy_path)
-            print(f"[Checkpoint] Saved policy to {policy_path}")
+            log_print(f"[Checkpoint] Saved policy to {policy_path}")
         except Exception as exc_policy:
-            print(f"[Checkpoint] Warning: failed to save standalone policy: {exc_policy}")
+            log_print(f"[Checkpoint] Warning: failed to save standalone policy: {exc_policy}")
 
     def load_latest(self):
         """Load the latest checkpoint if it exists."""
@@ -120,7 +121,7 @@ class CheckpointManager:
             return None, None
             
         latest = ckpts[-1]
-        print(f"[Checkpoint] Loading {latest}...")
+        log_print(f"[Checkpoint] Loading {latest}...")
         data = torch.load(latest, map_location='cpu')
         return latest, data
 
@@ -185,12 +186,12 @@ class CheckpointManager:
                     
                     # Validate non-empty arrays
                     if cvs.size == 0 or coords.size == 0:
-                        print(f"[History] Skipping empty NPZ: {npz}")
+                        log_print(f"[History] Skipping empty NPZ: {npz}")
                         continue
                     
                     # Validate shapes match
                     if len(cvs) != len(coords):
-                        print(f"[History] Skipping NPZ with mismatched shapes: {npz}")
+                        log_print(f"[History] Skipping NPZ with mismatched shapes: {npz}")
                         continue
                     
                     epoch_data = list(zip(list(cvs), list(coords)))
@@ -199,7 +200,7 @@ class CheckpointManager:
                     # Treat the NPZ batch as a single trajectory for boundary tracking
                     traj_lengths.append([len(epoch_data)])
             except Exception as e:
-                print(f"[History] Failed to load {npz}: {e}")
+                log_print(f"[History] Failed to load {npz}: {e}")
         return restored, traj_lengths
 
     def bootstrap_history_from_dcd(self, all_epoch_data: list, env, base_dir: str):
@@ -222,7 +223,7 @@ class CheckpointManager:
         dirs = [Path(d) for d in dirs if d]
         dirs = [d for d in dirs if d.is_dir()]
         if not dirs:
-            print(f"[History DCD] No valid directories found in '{base_dir}'.")
+            log_print(f"[History DCD] No valid directories found in '{base_dir}'.")
             return 0, []
 
         # Track DCD path ordering for downstream mapping/debugging.
@@ -239,9 +240,9 @@ class CheckpointManager:
         except Exception:
             pass
 
-        print("[History DCD] Bootstrapping from:")
+        log_print("[History DCD] Bootstrapping from:")
         for d in dirs:
-            print(f"  - {d}")
+            log_print(f"  - {d}")
         
         # Trajectories written by env.step() are protein-only by default
         # (md_topology.subset("protein")), but in explicit-solvent full-coordinate
@@ -264,7 +265,7 @@ class CheckpointManager:
         for d in dirs:
             dcd_files.extend(d.glob("**/*.dcd"))
         if not dcd_files:
-            print("[History DCD] No .dcd files found.")
+            log_print("[History DCD] No .dcd files found.")
             return 0, []
 
         # Deterministic ordering so trajectory indices remain stable across runs.
@@ -288,7 +289,7 @@ class CheckpointManager:
         except Exception:
             dcd_files = sorted(set(dcd_files), key=lambda p: p.as_posix())
 
-        print(f"[History DCD] Found {len(dcd_files)} .dcd files.")
+        log_print(f"[History DCD] Found {len(dcd_files)} .dcd files.")
 
         # Optional progress bar if tqdm is available
         try:
@@ -321,7 +322,7 @@ class CheckpointManager:
             # If any dihedral cannot be mapped cleanly, fall back to env.get_cvs()
             # (slower, but keeps CV dimensionality consistent).
             if np.any(dihedral_indices < 0):
-                print(
+                log_print(
                     "[History DCD] Warning: failed to map dihedral indices into protein topology; "
                     "falling back to per-frame CV extraction."
                 )
@@ -367,11 +368,11 @@ class CheckpointManager:
                                     strided_cursor += tr.n_frames
                                     continue
                                 if keep_mask.sum() < n_before:
-                                    print(
+                                    log_print(
                                         f"[History DCD] RMSD filter: kept {int(keep_mask.sum())}/{n_before} frames from {fpath.name}"
                                     )
                             except Exception as e:
-                                print(f"[History DCD] RMSD filtering failed for {fpath.name}: {e}")
+                                log_print(f"[History DCD] RMSD filtering failed for {fpath.name}: {e}")
 
                         # Vectorized torsion computation when possible
                         torsions_chunk = None
@@ -379,7 +380,7 @@ class CheckpointManager:
                             try:
                                 torsions_chunk = md.compute_dihedrals(tr, dihedral_indices)
                             except Exception as e:
-                                print(f"[History DCD] Dihedral computation failed for {fpath.name}: {e}")
+                                log_print(f"[History DCD] Dihedral computation failed for {fpath.name}: {e}")
                                 torsions_chunk = None
 
                         for frame_idx in range(tr.n_frames):
@@ -423,7 +424,7 @@ class CheckpointManager:
                     # Reset counter when retrying with a different topology.
                     strided_cursor = 0
                     try:
-                        print(
+                        log_print(
                             f"[History DCD] Protein-topology load failed for {fpath.name} ({exc_first}); "
                             "retrying as full-system DCD and slicing to protein."
                         )
@@ -445,18 +446,18 @@ class CheckpointManager:
                                     strided_cursor += tr.n_frames
                                     continue
                                 if keep_mask.sum() < n_before:
-                                    print(
+                                    log_print(
                                         f"[History DCD] RMSD filter: kept {int(keep_mask.sum())}/{n_before} frames from {fpath.name}"
                                     )
                             except Exception as e:
-                                print(f"[History DCD] RMSD filtering failed for {fpath.name}: {e}")
+                                log_print(f"[History DCD] RMSD filtering failed for {fpath.name}: {e}")
 
                         torsions_chunk = None
                         if dihedral_indices is not None:
                             try:
                                 torsions_chunk = md.compute_dihedrals(tr, dihedral_indices)
                             except Exception as e:
-                                print(f"[History DCD] Dihedral computation failed for {fpath.name}: {e}")
+                                log_print(f"[History DCD] Dihedral computation failed for {fpath.name}: {e}")
                                 torsions_chunk = None
 
                         for frame_idx in range(tr.n_frames):
@@ -500,7 +501,7 @@ class CheckpointManager:
                 if pbar is not None:
                     pbar.close()
             except Exception as e:
-                print(f"[History DCD] Error loading {fpath}: {e}")
+                log_print(f"[History DCD] Error loading {fpath}: {e}")
             
             if max_frames and imported >= max_frames:
                 break
@@ -519,5 +520,5 @@ class CheckpointManager:
         except Exception:
             pass
         
-        print(f"[History DCD] Imported {imported} frames.")
+        log_print(f"[History DCD] Imported {imported} frames.")
         return imported, traj_lengths

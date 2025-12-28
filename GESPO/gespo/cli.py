@@ -6,85 +6,11 @@ from .utils.logging import configure_logging
 from .config import TrainingConfig
 import os
 import copy
-import pickle
 import argparse
 import warnings
 import logging
 
 logger = logging.getLogger(__name__)
-
-def _fit_tica_from_dcd(base_dirs,
-                       pdb_path: str,
-                       out_path: str,
-                       lagtime: int = 20,
-                       dim: int = 2,
-                       stride: int = 2) -> None:
-    """
-    Fit a TICA model (deeptime) from existing DCD trajectories and save it.
-    """
-    try:
-        from deeptime.decomposition import TICA
-    except ImportError as exc:
-        raise RuntimeError(
-            "deeptime is required to fit TICA models. "
-            "Install it (e.g. `pip install deeptime`) or run the notebook-based workflow."
-        ) from exc
-
-    if isinstance(base_dirs, str):
-        base_dirs = [base_dirs]
-    base_dirs = [os.path.abspath(d) for d in base_dirs]
-    pdb_path = os.path.abspath(pdb_path)
-    out_path = os.path.abspath(out_path)
-
-    logger.info("Fitting TICA from DCDs under:")
-    for d in base_dirs:
-        logger.info("  - %s", d)
-    logger.info("Using reference PDB: %s", pdb_path)
-    logger.info("Output model path: %s", out_path)
-    logger.info("Settings: lagtime=%s frames, dim=%s, stride=%s", lagtime, dim, stride)
-
-    ref = md.load(pdb_path)
-    dcd_files = []
-    for base_dir in base_dirs:
-        for root, _, names in os.walk(base_dir):
-            for name in names:
-                if name.endswith(".dcd"):
-                    dcd_files.append(os.path.join(root, name))
-    dcd_files = sorted(set(dcd_files))
-    if not dcd_files:
-        raise RuntimeError(f"[TICA] No .dcd files found under: {', '.join(base_dirs)}")
-
-    trajs = []
-    for fpath in dcd_files:
-        try:
-            tr = md.load(fpath, top=pdb_path, stride=stride)
-            if tr.n_frames == 0:
-                continue
-            tr = tr.superpose(ref)
-            trajs.append(tr)
-        except Exception as exc:
-            logger.warning("Skipping %s: %s", fpath, exc)
-            continue
-
-    if not trajs:
-        raise RuntimeError(f"[TICA] No usable trajectories loaded from: {', '.join(base_dirs)}")
-
-    ca_list = []
-    for tr in trajs:
-        ca = tr.atom_slice(tr.topology.select("name CA"))
-        X = ca.xyz.reshape(ca.n_frames, -1)  # nm, flattened
-        ca_list.append(X.astype(np.float32))
-
-    logger.info("Prepared %s CA feature arrays.", len(ca_list))
-    tica = TICA(lagtime=lagtime, dim=dim)
-    tica.fit(ca_list)
-
-    out_dir = os.path.dirname(out_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    with open(out_path, "wb") as f:
-        pickle.dump(tica, f)
-    logger.info("Saved TICA model to %s", out_path)
 
 def main():
     def _suffix_dir(path: str, suffix: str) -> str:
@@ -146,24 +72,6 @@ def main():
     TrainingConfig.populate_parser(parser)
     
     # Add CLI-specific arguments not in TrainingConfig (utilities)
-    parser.add_argument(
-        "--fit-tica-from-dcd",
-        nargs="+",
-        default=[],
-        metavar="DIR",
-        help="Run offline TICA fit from DCDs and exit.",
-    )
-    parser.add_argument(
-        "--tica-out",
-        default="",
-        help="Output path for fitted TICA model (default: tica_model.pkl).",
-    )
-    parser.add_argument(
-        "--tica-stride",
-        type=int,
-        default=2,
-        help="Stride for loading frames from DCDs during offline TICA fitting.",
-    )
     parser.add_argument(
         "--log-file",
         default="",
@@ -265,20 +173,6 @@ def main():
 
     if args.suppress_warnings:
         warnings.filterwarnings("ignore")
-
-    # Offline TICA fitting
-    if args.fit_tica_from_dcd:
-        logger.info("Running offline TICA fitting")
-        tica_out = args.tica_out or "tica_model.pkl"
-        _fit_tica_from_dcd(
-            base_dirs=args.fit_tica_from_dcd,
-            pdb_path=args.pdb,
-            out_path=tica_out,
-            lagtime=args.tica_lagtime,
-            dim=args.tica_dim,
-            stride=getattr(args, "tica_stride", 2),
-        )
-        return
 
     # Offline TorsionARPolicy pretraining
     if getattr(args, "pretrain_torsion_ar", ""):

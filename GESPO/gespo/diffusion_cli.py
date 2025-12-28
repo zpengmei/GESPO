@@ -1,5 +1,6 @@
 """Command-line workflow for preparing diffusion data and training checkpoints."""
 from __future__ import annotations
+from gespo.utils.logging import log_print
 
 import argparse
 import math
@@ -153,12 +154,6 @@ def prepare_dataset(
     pca_balance_max_per_bin: int = 0,
     pca_balance_fit_cap: int = 50000,
     pca_balance_plot: str | None = None,
-    tica_balance: bool = False,
-    tica_balance_bins: int = 50,
-    tica_balance_max_per_bin: int = 0,
-    tica_balance_plot: str | None = None,
-    tica_balance_model: str | None = None,
-    tica_balance_lagtime: int = 10,
 ) -> Path:
     traj_dir_path = Path(traj_dir)
     patterns = traj_pattern if isinstance(traj_pattern, (list, tuple)) else [traj_pattern]
@@ -226,7 +221,7 @@ def prepare_dataset(
                     stop_loading = True
                     break
         except Exception as exc:
-            print(f"[prepare] Warning: failed to load {traj_file} ({exc}); skipping.")
+            log_print(f"[prepare] Warning: failed to load {traj_file} ({exc}); skipping.")
 
     if not positions_list:
         raise RuntimeError("No trajectory frames were collected.")
@@ -376,7 +371,7 @@ def prepare_dataset(
                 selected_idx = np.asarray(sorted(set(selected)), dtype=int)
 
             if selected_idx.size > 0 and selected_idx.size < n_frames:
-                print(
+                log_print(
                     f"[prepare] PCA-balanced subsampling: {selected_idx.size}/{n_frames} frames "
                     f"kept across {nbins}x{nbins} bins (max {max_per} per bin)."
                 )
@@ -421,106 +416,11 @@ def prepare_dataset(
                 plot_path.parent.mkdir(parents=True, exist_ok=True)
                 fig.savefig(plot_path, dpi=200)
                 plt.close(fig)
-                print(f"[prepare] Saved PCA balance summary plot to {plot_path}")
+                log_print(f"[prepare] Saved PCA balance summary plot to {plot_path}")
             except Exception as e:
-                print(f"[prepare] Warning: failed to save PCA balance plot ({e})")
+                log_print(f"[prepare] Warning: failed to save PCA balance plot ({e})")
         except Exception as e:
-            print(f"[prepare] Warning: PCA-balance step failed ({e}); using unbalanced dataset.")
-    # Optional TICA-based balanced subsampling to avoid bias
-    if tica_balance and positions.shape[0] > 0 and conditioning.shape[1] >= 2:
-        try:
-            # Fit or load TICA
-            proj_all = None
-            model_path = tica_balance_model or ""
-            if model_path and os.path.isfile(model_path):
-                import pickle
-                with open(model_path, "rb") as f:
-                    tica_model = pickle.load(f)
-                proj_all = tica_model.transform(conditioning)
-            else:
-                try:
-                    from deeptime.decomposition import TICA as _TICA
-                    tica_model = _TICA(lagtime=max(1, int(tica_balance_lagtime)), dim=2)
-                    tica_model.fit([conditioning])
-                    proj_all = tica_model.transform(conditioning)
-                except Exception as exc:
-                    print(f"[prepare] TICA balance skipped: unable to fit TICA model ({exc}).")
-            if proj_all is not None:
-                if proj_all.shape[1] > 2:
-                    proj_all = proj_all[:, :2]
-                n_frames = proj_all.shape[0]
-                nbins = int(max(1, tica_balance_bins))
-                counts, x_edges, y_edges = np.histogram2d(
-                    proj_all[:, 0], proj_all[:, 1], bins=nbins
-                )
-                bx = np.clip(np.digitize(proj_all[:, 0], x_edges) - 1, 0, nbins - 1)
-                by = np.clip(np.digitize(proj_all[:, 1], y_edges) - 1, 0, nbins - 1)
-                bin_ids = bx + nbins * by
-                max_per = int(max(0, tica_balance_max_per_bin))
-                if max_per <= 0:
-                    selected_idx = np.arange(n_frames, dtype=int)
-                else:
-                    selected = []
-                    for b in range(nbins * nbins):
-                        idx = np.where(bin_ids == b)[0]
-                        if idx.size == 0:
-                            continue
-                        if idx.size <= max_per:
-                            selected.extend(idx.tolist())
-                        else:
-                            choice = np.random.choice(idx, size=max_per, replace=False)
-                            selected.extend(choice.tolist())
-                    selected_idx = np.asarray(sorted(set(selected)), dtype=int)
-                if selected_idx.size > 0 and selected_idx.size < n_frames:
-                    print(
-                        f"[prepare] TICA-balanced subsampling: {selected_idx.size}/{n_frames} frames "
-                        f"kept across {nbins}x{nbins} bins (max {max_per} per bin)."
-                    )
-                    positions = positions[selected_idx]
-                    conditioning = conditioning[selected_idx]
-                    for key, val in list(extras.items()):
-                        if isinstance(val, np.ndarray) and val.shape and val.shape[0] == n_frames:
-                            extras[key] = val[selected_idx]
-                    total_frames = positions.shape[0]
-                if selected_idx.size > 0:
-                    try:
-                        plot_path = Path(tica_balance_plot) if tica_balance_plot else Path(output_path).with_name(
-                            Path(output_path).stem + "_tica_balance.png"
-                        )
-                        fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
-                        hb1 = axes[0].hexbin(
-                            proj_all[:, 0],
-                            proj_all[:, 1],
-                            gridsize=nbins,
-                            cmap="magma",
-                            norm=LogNorm(),
-                        )
-                        axes[0].set_title(f"Before (N={n_frames})")
-                        fig.colorbar(hb1, ax=axes[0], label="Counts")
-                        proj_sub = proj_all[selected_idx] if 'selected_idx' in locals() else proj_all
-                        hb2 = axes[1].hexbin(
-                            proj_sub[:, 0],
-                            proj_sub[:, 1],
-                            gridsize=nbins,
-                            cmap="magma",
-                            norm=LogNorm(),
-                        )
-                        axes[1].set_title(f"After (N={proj_sub.shape[0]})")
-                        fig.colorbar(hb2, ax=axes[1], label="Counts")
-                        for ax in axes:
-                            ax.set_xlabel("TIC 1")
-                            ax.set_ylabel("TIC 2")
-                        fig.suptitle("TICA Space Density Before/After Balancing", fontsize=14)
-                        fig.tight_layout(rect=[0, 0, 1, 0.95])
-                        plot_path.parent.mkdir(parents=True, exist_ok=True)
-                        fig.savefig(plot_path, dpi=200)
-                        plt.close(fig)
-                        print(f"[prepare] Saved TICA balance summary plot to {plot_path}")
-                    except Exception as e:
-                        print(f"[prepare] Warning: failed to save TICA balance plot ({e})")
-        except Exception as e:
-            print(f"[prepare] Warning: TICA-balance step failed ({e}); using unbalanced dataset.")
-
+            log_print(f"[prepare] Warning: PCA-balance step failed ({e}); using unbalanced dataset.")
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     extras.setdefault("conditioning", conditioning)
@@ -533,7 +433,7 @@ def prepare_dataset(
         segment_counts=segment_counts,
         **extras,
     )
-    print(f"[prepare] Saved dataset with {total_frames} frames to {output_path}")
+    log_print(f"[prepare] Saved dataset with {total_frames} frames to {output_path}")
     return output_path
 
 
@@ -697,16 +597,16 @@ def train_diffusion(
         config["hybrid_pair_dim"] = hybrid_pair_dim
     config["conditioning_mode"] = conditioning_mode
     model = model.to(device)
-    print("=== Diffusion Training Configuration ===")
-    print(f"Data: {data_path} | PDB: {pdb_path}")
-    print(f"Device: {device} | Batch size: {batch_size} | Epochs: {epochs} | Steps: {diffusion_steps}")
-    print(f"Learning rate: {lr} | Optimizer: {'Muon+AdamW' if use_muon else 'AdamW'}")
-    print("Model config:")
+    log_print("=== Diffusion Training Configuration ===")
+    log_print(f"Data: {data_path} | PDB: {pdb_path}")
+    log_print(f"Device: {device} | Batch size: {batch_size} | Epochs: {epochs} | Steps: {diffusion_steps}")
+    log_print(f"Learning rate: {lr} | Optimizer: {'Muon+AdamW' if use_muon else 'AdamW'}")
+    log_print("Model config:")
     for key, value in sorted(config.items()):
-        print(f"  {key}: {value}")
-    print("===============================\n")
-    print(model)
-    print("\n===============================\n")
+        log_print(f"  {key}: {value}")
+    log_print("===============================\n")
+    log_print(model)
+    log_print("\n===============================\n")
     # Optionally initialize from an existing checkpoint
     if init_checkpoint:
         try:
@@ -715,11 +615,11 @@ def train_diffusion(
                 ckpt = torch.load(init_path, map_location="cpu")
                 state = ckpt.get("state_dict", ckpt)
                 missing, unexpected = model.load_state_dict(state, strict=False)
-                print(f"[train] Loaded init checkpoint from {init_path}. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+                log_print(f"[train] Loaded init checkpoint from {init_path}. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
             else:
-                print(f"[train] Init checkpoint not found at {init_path}; continuing from random init.")
+                log_print(f"[train] Init checkpoint not found at {init_path}; continuing from random init.")
         except Exception as e:
-            print(f"[train] Failed to load init checkpoint ({e}); continuing from random init.")
+            log_print(f"[train] Failed to load init checkpoint ({e}); continuing from random init.")
 
     diffusion = create_diffusion(timestep_respacing="", diffusion_steps=diffusion_steps)
     optimizers = _build_optimizers(model, lr=lr, use_muon=use_muon, device=str(device))
@@ -763,7 +663,7 @@ def train_diffusion(
                 val_bar.set_postfix(loss=val_loss / step)
             val_loss /= max(1, len(val_loader))
 
-        print(f"[train] Epoch {epoch:03d} | train {avg_train:.4f} | val {val_loss:.4f}")
+        log_print(f"[train] Epoch {epoch:03d} | train {avg_train:.4f} | val {val_loss:.4f}")
         if val_loss < best_loss:
             best_loss = val_loss
             torch.save(
@@ -779,7 +679,7 @@ def train_diffusion(
                 },
                 checkpoint_path,
             )
-            print(f"[train] Saved checkpoint to {checkpoint_path} (val {val_loss:.4f})")
+            log_print(f"[train] Saved checkpoint to {checkpoint_path} (val {val_loss:.4f})")
 
 
 def parse_args() -> argparse.Namespace:
@@ -819,12 +719,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pca-balance-max-per-bin", type=int, default=0, help="Max frames per PCA bin (0 disables balancing).")
     parser.add_argument("--pca-balance-fit-cap", type=int, default=50000, help="Cap frames used to fit PCA (0 = all).")
     parser.add_argument("--pca-balance-plot", default="", help="Optional path for PCA balance before/after plot (PNG).")
-    parser.add_argument("--tica-balance", action="store_true", help="Enable TICA-based balanced subsampling using a provided TICA model.")
-    parser.add_argument("--tica-balance-bins", type=int, default=50, help="Number of bins per axis in TICA histogram (default 50).")
-    parser.add_argument("--tica-balance-max-per-bin", type=int, default=0, help="Max frames per TICA bin (0 disables balancing).")
-    parser.add_argument("--tica-balance-plot", default="", help="Optional path for TICA balance before/after plot (PNG).")
-    parser.add_argument("--tica-balance-model", default="", help="Path to TICA model (pickle) for TICA-based balancing.")
-    parser.add_argument("--tica-balance-lagtime", type=int, default=10, help="Lagtime for on-the-fly TICA fitting during balance.")
     parser.add_argument("--config", default="", help="YAML file to override CLI defaults for data/model/training.")
     parser.add_argument("--data-only", action="store_true", help="Only prepare the dataset; skip training.")
     parser.add_argument("--skip-prepare", action="store_true", help="Skip preparation and reuse an existing dataset.")
@@ -841,7 +735,7 @@ def _merge_section(args: argparse.Namespace, section: dict, section_name: str):
         if hasattr(args, key):
             setattr(args, key, value)
         else:
-            print(f"[config] Warning: unknown option '{key}' in section '{section_name}'")
+            log_print(f"[config] Warning: unknown option '{key}' in section '{section_name}'")
 
 
 def apply_config(args: argparse.Namespace, config_path: str) -> None:
@@ -891,17 +785,12 @@ def main():
             pca_balance_max_per_bin=int(getattr(args, "pca_balance_max_per_bin", 0)),
             pca_balance_fit_cap=int(getattr(args, "pca_balance_fit_cap", 50000)),
             pca_balance_plot=(args.pca_balance_plot or None),
-            tica_balance=bool(getattr(args, "tica_balance", False)),
-            tica_balance_bins=int(getattr(args, "tica_balance_bins", 50)),
-            tica_balance_max_per_bin=int(getattr(args, "tica_balance_max_per_bin", 0)),
-            tica_balance_plot=(args.tica_balance_plot or None),
-            tica_balance_model=(args.tica_balance_model or getattr(args, "tica_model", "") or None),
         )
     else:
-        print(f"[prepare] Skipping dataset prep and reusing {data_path}")
+        log_print(f"[prepare] Skipping dataset prep and reusing {data_path}")
 
     if args.data_only:
-        print("[train] Skipping diffusion training (data-only mode).")
+        log_print("[train] Skipping diffusion training (data-only mode).")
         return
 
     device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))

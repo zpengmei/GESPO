@@ -3,6 +3,7 @@ from .._imports import *
 from .geometry import calculate_rmsd
 from ..training.scorer import featurize_for_pca
 import os
+from gespo.utils.logging import log_print
 
 def plot_ramachandran_by_residue(all_cvs, cv_names, fname, residue_ids=None):
     """
@@ -12,7 +13,7 @@ def plot_ramachandran_by_residue(all_cvs, cv_names, fname, residue_ids=None):
     - Dynamically sizes the subplot grid based on number of residues.
     - Optionally restrict to a provided list of `residue_ids` (1-based).
     """
-    print(f"Generating per-residue Ramachandran plot: {fname}")
+    log_print(f"Generating per-residue Ramachandran plot: {fname}")
 
     # Infer residue IDs from cv_names if not provided. Prefer residues with both φ and ψ.
     if residue_ids is None:
@@ -47,7 +48,7 @@ def plot_ramachandran_by_residue(all_cvs, cv_names, fname, residue_ids=None):
         all_ids = sorted(list(set(int(r) for r in residue_ids)))
 
     if not all_ids:
-        print("[WARN] No residue IDs inferred from cv_names; skipping plot.")
+        log_print("[WARN] No residue IDs inferred from cv_names; skipping plot.")
         return
 
     n_res = len(all_ids)
@@ -102,7 +103,7 @@ def plot_ramachandran_by_residue(all_cvs, cv_names, fname, residue_ids=None):
     plt.tight_layout(rect=[0, 0.03, 1, 0.96])
     plt.savefig(fname, dpi=300)
     plt.close(fig)
-    print(f"Saved per-residue Ramachandran plot to {fname}")
+    log_print(f"Saved per-residue Ramachandran plot to {fname}")
 
 def plot_analysis_summary(
     all_epoch_data,
@@ -124,7 +125,7 @@ def plot_analysis_summary(
     """
     if not all_epoch_data: return
 
-    print(f"Generating summary plot: {fname}")
+    log_print(f"Generating summary plot: {fname}")
 
     # --- Aggregate and (optionally) downsample to control memory ---
     flat = [item for epoch_data in all_epoch_data for item in epoch_data]
@@ -134,7 +135,7 @@ def plot_analysis_summary(
     total_frames = len(flat)
     if total_frames > max_plot_frames:
         sel_idx = np.linspace(0, total_frames - 1, num=max_plot_frames, dtype=int)
-        print(f"Subsampling frames for plotting: {max_plot_frames}/{total_frames}")
+        log_print(f"Subsampling frames for plotting: {max_plot_frames}/{total_frames}")
     else:
         sel_idx = np.arange(total_frames, dtype=int)
         
@@ -167,7 +168,7 @@ def plot_analysis_summary(
     # Debug: report how many frames have valid energies (finite values).
     valid_energy_mask = np.isfinite(energies)
     n_valid_energy = int(np.count_nonzero(valid_energy_mask))
-    print(f"[Plot] Found {n_valid_energy}/{energies.shape[0]} frames with valid energies for Energy/RMSD diagnostics.")
+    log_print(f"[Plot] Found {n_valid_energy}/{energies.shape[0]} frames with valid energies for Energy/RMSD diagnostics.")
 
     ref_pdb = PDBFile(ref_pdb_path)
     ref_positions = ref_pdb.positions.value_in_unit(nanometer)
@@ -198,11 +199,9 @@ def plot_analysis_summary(
             energies = energies[mask]
             if e2e_dist is not None:
                 e2e_dist = e2e_dist[mask]
-            print(f"[RMSD filter] Plotting kept {kept} frames")
+            log_print(f"[RMSD filter] Plotting kept {kept} frames")
 
-    # Detect TICA mode
     proj_name = getattr(pca_scorer, 'projection_name', 'PCA')
-    use_tica_msm = bool(getattr(pca_scorer, 'use_msm_reweight', False) and str(proj_name).upper() == 'TICA')
 
     # --- Helper: Feature Builder (Must match Training Logic) ---
     def _build_features_for_pca(cvs, coords):
@@ -235,22 +234,6 @@ def plot_analysis_summary(
             return np.array(out_feats, dtype=np.float32)
 
         # [Existing Logic]
-        elif mode == 'tica_ca':
-            ca_idx = getattr(pca_scorer, 'ca_indices', None)
-            ref_ca_nm = getattr(pca_scorer, 'ref_ca_nm', None)
-            if ca_idx is None or ref_ca_nm is None:
-                return featurize_for_pca(cvs)
-            feats = []
-            for t in range(coords.shape[0]):
-                pos_nm = coords[t]
-                cur_ca = pos_nm[ca_idx]
-                try:
-                    from .geometry import kabsch_align as _kab
-                    aligned = _kab(cur_ca, ref_ca_nm)
-                except: aligned = cur_ca
-                feats.append(aligned.reshape(-1).astype(np.float32))
-            return np.asarray(feats, dtype=np.float32)
-        
         else:
             # Default Torsion
             return featurize_for_pca(cvs)
@@ -300,12 +283,12 @@ def plot_analysis_summary(
                     vamp_pmf_visited = int(np.count_nonzero(counts > 0))
                     vamp_pmf_total = float(total_v)
     except Exception as exc_vamp_pmf:
-        print(f"[Plot] Warning: failed to prepare VAMP-bin PMF panel: {exc_vamp_pmf}")
+        log_print(f"[Plot] Warning: failed to prepare VAMP-bin PMF panel: {exc_vamp_pmf}")
         vamp_pmf = None
 
     # --- Create Figure ---
     # 3x2 layout (optional +1 row for VAMP PMF):
-    #   (A) Primary projection (TICA/PCA)
+    #   (A) Primary projection (PCA/projection)
     #   (B) MSM-reweighted PMF (if available) or RMSD/E2E
     #   (C) Plain PCA projection
     #   (D) PCA density (counts)
@@ -321,46 +304,31 @@ def plot_analysis_summary(
     # --- Build features and projections once ---
     cv_pca = None
     cv_pca_plain = None
-    macro_labels = None
-    macro_centers = None
-    frame_weights = None
-    vamp_labels = None
     feats = None
     if pca_scorer.is_ready:
-        try:
-            if feature_builder is not None:
-                feats = feature_builder.build_projection_features(all_cvs, all_coords)
-                feats = np.asarray(feats, dtype=np.float32)
-                if feats.ndim == 3 and feats.shape[0] == all_cvs.shape[0]:
-                    feats = feats.reshape(all_cvs.shape[0], -1)
-            else:
-                feats = _build_features_for_pca(all_cvs, all_coords)
+        if feature_builder is not None:
+            feats = feature_builder.build_projection_features(all_cvs, all_coords)
             feats = np.asarray(feats, dtype=np.float32)
-            cv_pca = pca_scorer.pca.transform(feats)
-            # Plain PCA on the same features for comparison
-            try:
-                cv_pca_plain = PCA(n_components=2).fit_transform(feats)
-            except Exception:
-                cv_pca_plain = None
-        except Exception:
-            cv_pca = None
-            cv_pca_plain = None
+            if feats.ndim == 3 and feats.shape[0] == all_cvs.shape[0]:
+                feats = feats.reshape(all_cvs.shape[0], -1)
+        else:
+            feats = _build_features_for_pca(all_cvs, all_coords)
+        feats = np.asarray(feats, dtype=np.float32)
+        cv_pca = pca_scorer.pca.transform(feats)
+        cv_pca_plain = PCA(n_components=2).fit_transform(feats)
 
         # Apply outlier filter in IC space for plotting only (if enabled).
         if cv_pca is not None and cv_pca.shape[0] == all_cvs.shape[0] and plot_radius_quantile > 0.0:
-            try:
-                radii = np.linalg.norm(cv_pca[:, :2], axis=1)
-                r_cut = np.quantile(radii[np.isfinite(radii)], plot_radius_quantile)
+            radii = np.linalg.norm(cv_pca[:, :2], axis=1)
+            finite_radii = radii[np.isfinite(radii)]
+            if finite_radii.size:
+                r_cut = np.quantile(finite_radii, plot_radius_quantile)
                 mask = radii <= r_cut
                 if mask.any() and mask.sum() >= 10:
                     cv_pca = cv_pca[mask]
                     if cv_pca_plain is not None and cv_pca_plain.shape[0] == mask.shape[0]:
                         # If cv_pca_plain was built from the same feats, keep it in sync
                         cv_pca_plain = cv_pca_plain[mask]
-                    if macro_labels is not None and macro_labels.shape[0] == mask.shape[0]:
-                        macro_labels = macro_labels[mask]
-                    if frame_weights is not None and frame_weights.shape[0] == mask.shape[0]:
-                        frame_weights = frame_weights[mask]
                     if rmsd_values.shape[0] == mask.shape[0]:
                         rmsd_values = rmsd_values[mask]
                     if energies.shape[0] == mask.shape[0]:
@@ -371,396 +339,168 @@ def plot_analysis_summary(
                     all_coords = all_coords[mask]
                     if feats is not None and feats.shape[0] == mask.shape[0]:
                         feats = feats[mask]
-                    print(f"[Plot] Applied IC radius quantile filter q={plot_radius_quantile:.3f}; kept {int(mask.sum())}/{len(mask)} frames for plotting.")
-            except Exception as exc_filter:
-                print(f"[Plot] Failed to apply IC outlier filter: {exc_filter}")
+                    log_print(
+                        f"[Plot] Applied IC radius quantile filter q={plot_radius_quantile:.3f}; "
+                        f"kept {int(mask.sum())}/{len(mask)} frames for plotting."
+                    )
 
-        # If TICA+MSM/PCCA metadata is available, build per-frame macrostate labels
-        # and MSM-inspired frame weights for plotting.
-        if use_tica_msm and cv_pca is not None:
-            try:
-                pcca_centers = getattr(pca_scorer, "pcca_centers", None)
-                micro_to_macro = getattr(pca_scorer, "pcca_micro_to_macro", None)
-                pi_full = getattr(pca_scorer, "msm_pi_full", None)
-                if (
-                    pcca_centers is not None
-                    and micro_to_macro is not None
-                    and pi_full is not None
-                    and len(pcca_centers) > 0
-                ):
-                    centers_arr = np.asarray(pcca_centers, dtype=np.float32)
-                    m2M = np.asarray(micro_to_macro, dtype=int)
-                    pi_arr = np.asarray(pi_full, dtype=float)
-
-                    # Map each frame to its nearest microstate center
-                    d2 = ((cv_pca[:, None, :] - centers_arr[None, :, :]) ** 2).sum(axis=2)
-                    micro_labels = d2.argmin(axis=1).astype(int)
-                    micro_labels_clipped = np.clip(micro_labels, 0, len(m2M) - 1)
-                    macro_labels = m2M[micro_labels_clipped]
-
-                    # Frame weights: distribute pi_full over frames in each microstate
-                    counts = np.bincount(micro_labels, minlength=len(pi_arr))
-                    w_micro = np.zeros_like(pi_arr, dtype=float)
-                    visited = counts > 0
-                    w_micro[visited] = pi_arr[visited] / counts[visited]
-                    frame_weights = w_micro[micro_labels]
-                    total_w = frame_weights.sum()
-                    if total_w > 0 and np.isfinite(total_w):
-                        frame_weights = frame_weights / total_w
-                    else:
-                        frame_weights = np.ones_like(frame_weights, dtype=float) / len(frame_weights)
-
-                    # Macro centers for annotation
-                    n_sets = int(max(0, m2M.max() + 1)) if np.any(m2M >= 0) else 0
-                    if n_sets > 0:
-                        macro_centers = np.full((n_sets, 2), np.nan, dtype=float)
-                        for m in range(n_sets):
-                            mask = macro_labels == m
-                            if np.any(mask):
-                                macro_centers[m] = cv_pca[mask].mean(axis=0)
-                    else:
-                        macro_centers = None
-            except Exception as exc_pcca_plot:
-                print(f"[Plot] Failed to construct PCCA macrostate labels for plotting: {exc_pcca_plot}")
-                macro_labels = None
-                macro_centers = None
-                frame_weights = None
-
-        # If we are in DeepTICA/VAMP mode and the projector exposes a model
-        # with soft VAMP state outputs, build per-frame hard state labels for
-        # coloring diagnostics (e.g., Energy vs RMSD).
-        try:
-            proj_name_upper = str(proj_name).upper()
-            projector = getattr(pca_scorer, "pca", None)
-            model = getattr(projector, "model", None) if projector is not None else None
-            if (
-                proj_name_upper == "DEEPTICA"
-                and model is not None
-                and feats is not None
-                and feats.shape[0] == all_cvs.shape[0]
-                and hasattr(model, "get_hidden")
-            ):
-                import torch as _torch
-                x_t = _torch.tensor(feats, dtype=_torch.float32, device=model.average.device)
-                with _torch.no_grad():
-                    z = model.get_hidden(x_t)
-                    probs = z
-                probs_np = probs.detach().cpu().numpy().astype(np.float32)
-                vamp_labels = probs_np.argmax(axis=1).astype(int)
-        except Exception as exc_vlab:
-            print(f"[Plot] Failed to construct VAMP cluster labels for Energy/RMSD panel: {exc_vlab}")
-            vamp_labels = None
-
-    # --- Panel A: Primary Projection (TICA/PCA) ---
+    # --- Panel A: Primary Projection ---
     ax0 = plt.subplot(gs[0, 0])
     if pca_scorer.is_ready and cv_pca is not None:
-        try:
-            if use_tica_msm:
-                # If PCCA metadata is available, color by macrostate cluster.
-                if macro_labels is not None and macro_centers is not None:
-                    scatter = ax0.scatter(
-                        cv_pca[:, 0],
-                        cv_pca[:, 1],
-                        c=macro_labels,
-                        s=1,
-                        alpha=0.5,
-                        cmap="tab10",
-                    )
-                    ax0.scatter(
-                        macro_centers[:, 0],
-                        macro_centers[:, 1],
-                        c="red",
-                        s=200,
-                        marker="X",
-                        edgecolors="white",
-                        linewidths=2,
-                        zorder=5,
-                        label="PCCA Centers",
-                    )
-                    for m, (x_c, y_c) in enumerate(macro_centers):
-                        if np.isfinite(x_c) and np.isfinite(y_c):
-                            ax0.text(
-                                x_c,
-                                y_c,
-                                str(m),
-                                fontsize=10,
-                                ha="center",
-                                va="center",
-                                color="white",
-                                weight="bold",
-                            )
-                    fig.colorbar(scatter, ax=ax0, label="Macrostate ID")
-                    ax0.set_title(f"(A) PCCA Macrostates in {proj_name}", pad=15)
-                else:
-                    # Fallback: high-resolution unweighted PMF
-                    H, x_e, y_e = np.histogram2d(cv_pca[:, 0], cv_pca[:, 1], bins=100)
-                    H = H.astype(float)
-                    pmf = -np.log(H / H.sum() + 1e-12)
-                    pmf -= np.nanmin(pmf)
-                    pmf[H == 0] = np.nan
-                    X, Y = np.meshgrid(x_e[:-1], y_e[:-1])
-                    im0 = ax0.pcolormesh(X.T, Y.T, pmf, cmap="viridis", shading="auto", vmax=10.0)
-                    fig.colorbar(im0, ax=ax0, label="PMF (kT)")
-                    ax0.set_title(f"(A) Unweighted PMF in {proj_name}", pad=15)
-            else:
-                # Non-TICA or MSM disabled: show high-resolution counts.
-                H, x_e, y_e = np.histogram2d(cv_pca[:, 0], cv_pca[:, 1], bins=100)
-                H = H.astype(float)
-                im0 = ax0.pcolormesh(
-                    x_e[:-1],
-                    y_e[:-1],
-                    H.T,
-                    cmap="magma",
-                    shading="auto",
-                    norm=LogNorm(),
-                )
-                fig.colorbar(im0, ax=ax0, label="Counts")
-                ax0.set_title(f"(A) {proj_name} Projection", pad=15)
-            ax0.set_xlabel("IC 1"); ax0.set_ylabel("IC 2")
-        except Exception as e:
-            ax0.text(0.5, 0.5, f"Projection Error:\n{str(e)}", ha="center")
+        H, x_e, y_e = np.histogram2d(cv_pca[:, 0], cv_pca[:, 1], bins=100)
+        H = H.astype(float)
+        im0 = ax0.pcolormesh(
+            x_e[:-1],
+            y_e[:-1],
+            H.T,
+            cmap="magma",
+            shading="auto",
+            norm=LogNorm(),
+        )
+        fig.colorbar(im0, ax=ax0, label="Counts")
+        ax0.set_title(f"(A) {proj_name} Projection", pad=15)
+        ax0.set_xlabel("Component 1")
+        ax0.set_ylabel("Component 2")
     else:
         ax0.text(0.5, 0.5, "Model not ready", ha="center")
 
-    # --- Panel B: MSM-Reweighted PMF or RMSD/E2E ---
+    # --- Panel B: RMSD/E2E Summary ---
     ax1 = plt.subplot(gs[0, 1])
-    if use_tica_msm and pca_scorer.is_ready and cv_pca is not None:
-        try:
-            if frame_weights is not None:
-                # High-resolution MSM-reweighted PMF as in the notebook snippet
-                hist_rw, xedges_rw, yedges_rw = np.histogram2d(
-                    cv_pca[:, 0],
-                    cv_pca[:, 1],
-                    bins=100,
-                    weights=frame_weights,
-                    density=True,
-                )
-                pmf_rw = -np.log(hist_rw + 1e-10)
-                pmf_rw -= np.nanmin(pmf_rw)
-                VMAX = 5.0
-                pmf_rw[pmf_rw > VMAX] = np.inf
-                X_rw, Y_rw = np.meshgrid(xedges_rw[:-1], yedges_rw[:-1])
-                contourf = ax1.contourf(
-                    X_rw,
-                    Y_rw,
-                    pmf_rw.T,
-                    levels=20,
-                    cmap="viridis",
-                    vmin=0,
-                    vmax=VMAX,
-                )
-                ax1.contour(
-                    X_rw,
-                    Y_rw,
-                    pmf_rw.T,
-                    levels=5,
-                    colors="white",
-                    linewidths=0.5,
-                    alpha=0.6,
-                )
-                if macro_centers is not None:
-                    ax1.scatter(
-                        macro_centers[:, 0],
-                        macro_centers[:, 1],
-                        c="red",
-                        s=200,
-                        marker="X",
-                        edgecolors="white",
-                        linewidths=2,
-                        zorder=5,
-                    )
-                fig.colorbar(contourf, ax=ax1, label="PMF (kT)")
-                ax1.set_title("(B) MSM-Reweighted PMF", pad=15)
-                ax1.set_xlabel("IC 1"); ax1.set_ylabel("IC 2")
-            else:
-                ax1.text(0.5, 0.5, "MSM/PCCA metadata unavailable", ha="center")
-        except Exception as e:
-            ax1.text(0.5, 0.5, f"Reweighted PMF error:\n{str(e)}", ha="center")
+    if pca_scorer.is_ready and cv_pca is not None:
+        if e2e_dist is not None:
+            sc = ax1.scatter(
+                rmsd_values,
+                e2e_dist,
+                c=energies,
+                s=2,
+                alpha=0.6,
+                cmap="viridis",
+            )
+            fig.colorbar(sc, ax=ax1, label="Energy")
+            ax1.set_xlabel("RMSD (nm)")
+            ax1.set_ylabel("End-to-end (nm)")
+            ax1.set_title("(B) RMSD vs End-to-end", pad=15)
+        else:
+            H, x_e, y_e = np.histogram2d(cv_pca[:, 0], cv_pca[:, 1], bins=100)
+            im1 = ax1.pcolormesh(
+                x_e[:-1],
+                y_e[:-1],
+                H.T,
+                cmap="magma",
+                shading="auto",
+                norm=LogNorm(),
+            )
+            fig.colorbar(im1, ax=ax1, label="Counts")
+            ax1.set_xlabel("Component 1")
+            ax1.set_ylabel("Component 2")
+            ax1.set_title("(B) Projection Density", pad=15)
     else:
-        # Fallback: RMSD vs End-to-End
-        if e2e_dist is None:
-            try:
-                e2e_dist = np.zeros_like(rmsd_values)
-            except Exception:
-                e2e_dist = np.zeros(len(all_cvs))
-            print("[Plot] e2e_dist unavailable; using zeros as fallback for panel B.")
-        ax1.hexbin(e2e_dist, rmsd_values, gridsize=100, cmap="cividis", norm=LogNorm())
-        ax1.set_xlabel("End-to-End (nm)"); ax1.set_ylabel("RMSD (nm)")
-        ax1.set_title("(B) RMSD vs E2E", pad=15)
+        ax1.text(0.5, 0.5, "Model not ready", ha="center")
 
     # --- Panel C: Plain PCA Projection (unweighted) ---
     ax2 = plt.subplot(gs[1, 0])
     if cv_pca_plain is not None:
-        try:
-            hb2 = ax2.hexbin(cv_pca_plain[:, 0], cv_pca_plain[:, 1], gridsize=100, cmap="magma", norm=LogNorm())
-            fig.colorbar(hb2, ax=ax2, label="Counts")
-            ax2.set_title("(C) Plain PCA Projection", pad=15)
-            ax2.set_xlabel("PC 1"); ax2.set_ylabel("PC 2")
-        except Exception as e:
-            ax2.text(0.5, 0.5, f"PCA projection error:\n{str(e)}", ha="center")
+        hb2 = ax2.hexbin(cv_pca_plain[:, 0], cv_pca_plain[:, 1], gridsize=100, cmap="magma", norm=LogNorm())
+        fig.colorbar(hb2, ax=ax2, label="Counts")
+        ax2.set_title("(C) Plain PCA Projection", pad=15)
+        ax2.set_xlabel("PC 1"); ax2.set_ylabel("PC 2")
     else:
         ax2.text(0.5, 0.5, "Plain PCA not available", ha="center")
-
-    # --- Panel D: PCA PMF (MSM-reweighted when available) ---
+    # --- Panel D: PCA PMF ---
     ax3 = plt.subplot(gs[1, 1])
     if cv_pca_plain is not None:
-        try:
-            if use_tica_msm and pca_scorer.is_ready and cv_pca is not None:
-                centers = getattr(pca_scorer, "pcca_centers", None)
-                pi_full = getattr(pca_scorer, "msm_pi_full", None)
-                if centers is not None and pi_full is not None:
-                    # Map frames to MSM microstates in the primary (TICA/PCA) space
-                    d2 = ((cv_pca[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-                    labels = d2.argmin(axis=1)
-                    weights = pi_full[labels]
-                    # Histogram in plain PCA space, weighted by MSM stationary probs
-                    H_p, x_p, y_p = np.histogram2d(
-                        cv_pca_plain[:, 0], cv_pca_plain[:, 1],
-                        bins=bins,
-                        weights=weights,
-                    )
-                    H_p = H_p.astype(float)
-                    pmf_p = -np.log(H_p / H_p.sum() + 1e-12)
-                    pmf_p -= np.nanmin(pmf_p)
-                    pmf_p[H_p == 0] = np.nan
-                    Xp, Yp = np.meshgrid(x_p[:-1], y_p[:-1])
-                    im3 = ax3.pcolormesh(
-                        Xp.T, Yp.T, pmf_p,
-                        cmap="viridis",
-                        shading="auto",
-                        vmax=10.0,
-                    )
-                    fig.colorbar(im3, ax=ax3, label="Reweighted PMF (kT)")
-                    ax3.set_title("(D) PCA PMF (MSM-reweighted)", pad=15)
-                    ax3.set_xlabel("PC 1"); ax3.set_ylabel("PC 2")
-                else:
-                    raise RuntimeError("MSM/PCCA metadata unavailable for PCA reweighting")
-            else:
-                # Fallback: unweighted PCA PMF
-                H_p, x_p, y_p = np.histogram2d(
-                    cv_pca_plain[:, 0], cv_pca_plain[:, 1], bins=bins
-                )
-                H_p = H_p.astype(float)
-                pmf_p = -np.log(H_p / H_p.sum() + 1e-12)
-                pmf_p -= np.nanmin(pmf_p)
-                pmf_p[H_p == 0] = np.nan
-                Xp, Yp = np.meshgrid(x_p[:-1], y_p[:-1])
-                im3 = ax3.pcolormesh(
-                    Xp.T, Yp.T, pmf_p,
-                    cmap="viridis",
-                    shading="auto",
-                    vmax=10.0,
-                )
-                fig.colorbar(im3, ax=ax3, label="PMF (kT)")
-                ax3.set_title("(D) Plain PCA PMF", pad=15)
-                ax3.set_xlabel("PC 1"); ax3.set_ylabel("PC 2")
-        except Exception as e:
-            ax3.text(0.5, 0.5, f"PCA PMF error:\n{str(e)}", ha="center")
+        H_p, x_p, y_p = np.histogram2d(
+            cv_pca_plain[:, 0], cv_pca_plain[:, 1],
+            bins=bins,
+        )
+        H_p = H_p.astype(float)
+        pmf_p = -np.log(H_p / H_p.sum() + 1e-12)
+        pmf_p -= np.nanmin(pmf_p)
+        pmf_p[H_p == 0] = np.nan
+        Xp, Yp = np.meshgrid(x_p[:-1], y_p[:-1])
+        im3 = ax3.pcolormesh(Xp.T, Yp.T, pmf_p, cmap="viridis", shading="auto", vmax=10.0)
+        fig.colorbar(im3, ax=ax3, label="PMF (kT)")
+        ax3.set_title("(D) PCA PMF", pad=15)
+        ax3.set_xlabel("PC 1"); ax3.set_ylabel("PC 2")
     else:
         ax3.text(0.5, 0.5, "Plain PCA not available", ha="center")
 
-    # --- Panel E: Energy vs RMSD colored by VAMP cluster (DeepTICA) ---
+    # --- Panel E: Energy vs RMSD ---
     ax4 = plt.subplot(gs[2, 0])
-    try:
-        if energies.size and rmsd_values.size and energies.shape[0] == rmsd_values.shape[0]:
-            # Restrict to frames with valid (finite) energies only.
-            mask_e = np.isfinite(energies)
-            if not np.any(mask_e):
-                ax4.text(0.5, 0.5, "No valid energies for Energy/RMSD panel", ha="center")
-            else:
-                e_plot = energies[mask_e]
-                r_plot = rmsd_values[mask_e]
-                v_plot = None
-                if vamp_labels is not None and vamp_labels.shape[0] == energies.shape[0]:
-                    v_plot = vamp_labels[mask_e]
-
-                if v_plot is not None:
-                    sc = ax4.scatter(
-                        r_plot,
-                        e_plot,
-                        c=v_plot,
-                        s=5,
-                        cmap="tab10",
-                        alpha=0.7,
-                        edgecolors="none",
-                    )
-                    cbar = fig.colorbar(sc, ax=ax4)
-                    cbar.set_label("VAMP State ID")
-                    ax4.set_title("(E) Energy vs RMSD (VAMP states)", pad=15)
-                else:
-                    hb_e = ax4.hexbin(
-                        r_plot,
-                        e_plot,
-                        gridsize=100,
-                        cmap="viridis",
-                        norm=LogNorm(),
-                    )
-                    fig.colorbar(hb_e, ax=ax4, label="Counts")
-                    ax4.set_title("(E) Energy vs RMSD", pad=15)
-                ax4.set_xlabel("RMSD (nm)")
-                ax4.set_ylabel("Energy (kJ/mol)")
+    if energies.size and rmsd_values.size and energies.shape[0] == rmsd_values.shape[0]:
+        # Restrict to frames with valid (finite) energies only.
+        mask_e = np.isfinite(energies)
+        if not np.any(mask_e):
+            ax4.text(0.5, 0.5, "No valid energies for Energy/RMSD panel", ha="center")
         else:
-            ax4.text(0.5, 0.5, "Energy/RMSD unavailable", ha="center")
-    except Exception as exc_e:
-        ax4.text(0.5, 0.5, f"Energy/RMSD panel error:\n{str(exc_e)}", ha="center")
+            e_plot = energies[mask_e]
+            r_plot = rmsd_values[mask_e]
+            hb_e = ax4.hexbin(
+                r_plot,
+                e_plot,
+                gridsize=100,
+                cmap="viridis",
+                mincnt=1,
+            )
+            cbar = fig.colorbar(hb_e, ax=ax4)
+            cbar.set_label("Counts")
+            ax4.set_title("(E) Energy vs RMSD", pad=15)
+            ax4.set_xlabel("RMSD (nm)")
+            ax4.set_ylabel("Energy (kJ/mol)")
+    else:
+        ax4.text(0.5, 0.5, "Energy/RMSD unavailable", ha="center")
 
     # --- Panel F: Single-residue Ramachandran (for quick angle view) ---
     res_phi = sorted({int(n.split('_')[1]) for n in cv_names if 'phi' in n})
     r2 = res_phi[-2] if len(res_phi) > 2 else (res_phi[0] if res_phi else 0)
     ax5 = plt.subplot(gs[2, 1])
-    try:
-        if res_phi:
-            idx_p = cv_names.index(f'phi_{r2}')
-            idx_s = cv_names.index(f'psi_{r2}')
-            ax5.hexbin(
-                all_cvs[:, idx_p],
-                all_cvs[:, idx_s],
-                gridsize=100,
-                cmap="viridis",
-                norm=LogNorm(),
-                extent=[-np.pi, np.pi, -np.pi, np.pi],
-            )
-            ax5.set_title(f"(F) Res {r2}")
-        else:
-            ax5.text(0.5, 0.5, "No Ramachandran data", ha="center")
-    except Exception as exc_f:
-        ax5.text(0.5, 0.5, f"Ramachandran panel error:\n{str(exc_f)}", ha="center")
+    if res_phi and f"phi_{r2}" in cv_names and f"psi_{r2}" in cv_names:
+        idx_p = cv_names.index(f"phi_{r2}")
+        idx_s = cv_names.index(f"psi_{r2}")
+        ax5.hexbin(
+            all_cvs[:, idx_p],
+            all_cvs[:, idx_s],
+            gridsize=100,
+            cmap="viridis",
+            norm=LogNorm(),
+            extent=[-np.pi, np.pi, -np.pi, np.pi],
+        )
+        ax5.set_title(f"(F) Res {r2}")
+    else:
+        ax5.text(0.5, 0.5, "No Ramachandran data", ha="center")
 
     # --- Panel G: Linear VAMP PMF used for bin counting (if available) ---
     if vamp_pmf is not None and vamp_pmf_edges is not None:
         ax6 = plt.subplot(gs[3, :])
-        try:
-            pmf_plot = np.asarray(vamp_pmf, dtype=np.float32).T
-            edges = np.asarray(vamp_pmf_edges, dtype=np.float32)
-            vmax = float(vamp_pmf_vmax) if vamp_pmf_vmax is not None else 10.0
-            im6 = ax6.pcolormesh(
-                edges,
-                edges,
-                pmf_plot,
-                cmap="viridis",
-                shading="auto",
-                vmin=0.0,
-                vmax=vmax,
-            )
-            fig.colorbar(im6, ax=ax6, label="PMF (kT)")
-            nbins = int(vamp_pmf.shape[0]) * int(vamp_pmf.shape[1])
-            visited = int(vamp_pmf_visited) if vamp_pmf_visited is not None else None
-            total = float(vamp_pmf_total) if vamp_pmf_total is not None else None
-            extra = []
-            if visited is not None:
-                extra.append(f"visited={visited}/{nbins}")
-            if total is not None:
-                extra.append(f"frames~{int(total)}")
-            extra_s = (" (" + ", ".join(extra) + ")") if extra else ""
-            ax6.set_title(f"(G) Linear VAMP PMF (bin-count space){extra_s}", pad=15)
-            ax6.set_xlabel("Linear VAMP 1 (z-score)")
-            ax6.set_ylabel("Linear VAMP 2 (z-score)")
-        except Exception as exc_g:
-            ax6.text(0.5, 0.5, f"VAMP PMF error:\n{str(exc_g)}", ha="center")
+        pmf_plot = np.asarray(vamp_pmf, dtype=np.float32).T
+        edges = np.asarray(vamp_pmf_edges, dtype=np.float32)
+        vmax = float(vamp_pmf_vmax) if vamp_pmf_vmax is not None else 10.0
+        im6 = ax6.pcolormesh(
+            edges,
+            edges,
+            pmf_plot,
+            cmap="viridis",
+            shading="auto",
+            vmin=0.0,
+            vmax=vmax,
+        )
+        fig.colorbar(im6, ax=ax6, label="PMF (kT)")
+        nbins = int(vamp_pmf.shape[0]) * int(vamp_pmf.shape[1])
+        visited = int(vamp_pmf_visited) if vamp_pmf_visited is not None else None
+        total = float(vamp_pmf_total) if vamp_pmf_total is not None else None
+        extra = []
+        if visited is not None:
+            extra.append(f"visited={visited}/{nbins}")
+        if total is not None:
+            extra.append(f"frames~{int(total)}")
+        extra_s = (" (" + ", ".join(extra) + ")") if extra else ""
+        ax6.set_title(f"(G) Linear VAMP PMF (bin-count space){extra_s}", pad=15)
+        ax6.set_xlabel("Linear VAMP 1 (z-score)")
+        ax6.set_ylabel("Linear VAMP 2 (z-score)")
     plt.tight_layout()
     plt.savefig(fname, dpi=150)
     plt.close()
-    print(f"Saved plot to {fname}")
+    log_print(f"Saved plot to {fname}")
 
 
 def plot_transition_diagnostics(
@@ -822,8 +562,8 @@ def plot_transition_diagnostics(
         edgecolors="none",
     )
     # Dynamic axis/labels depending on projection
-    label1 = "IC 1" if str(proj_name).upper() == "TICA" else ("PC 1" if str(proj_name).upper() == "PCA" else "Comp 1")
-    label2 = "IC 2" if str(proj_name).upper() == "TICA" else ("PC 2" if str(proj_name).upper() == "PCA" else "Comp 2")
+    label1 = "PC 1" if str(proj_name).upper() == "PCA" else "Comp 1"
+    label2 = "PC 2" if str(proj_name).upper() == "PCA" else "Comp 2"
     scatter_ax.set_title(f"{proj_name} colored by cluster ID")
     scatter_ax.set_xlabel(label1)
     scatter_ax.set_ylabel(label2)
@@ -867,4 +607,4 @@ def plot_transition_diagnostics(
     fname = Path(fname)
     fig.savefig(fname, dpi=300)
     plt.close(fig)
-    print(f"Saved transition diagnostics figure to {fname}")
+    log_print(f"Saved transition diagnostics figure to {fname}")

@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 from typing import Optional, Tuple
+from gespo.utils.logging import log_print
 
 import numpy as np
 import torch
@@ -277,22 +278,22 @@ def main():
         psi_hist_sample=psi_h_samp,
     )
 
-    print("[TorsionAR Eval] Dataset:", f"N={N}, L={L}")
-    print("[TorsionAR Eval] Train NLL/angle:", f"{train_stats['nll_per_angle_mean']:.4f}",
+    log_print("[TorsionAR Eval] Dataset:", f"N={N}, L={L}")
+    log_print("[TorsionAR Eval] Train NLL/angle:", f"{train_stats['nll_per_angle_mean']:.4f}",
           "(baseline:", f"{baseline_nll_per_angle:.4f})")
     if val_stats["n"] > 0:
-        print("[TorsionAR Eval] Val   NLL/angle:", f"{val_stats['nll_per_angle_mean']:.4f}",
+        log_print("[TorsionAR Eval] Val   NLL/angle:", f"{val_stats['nll_per_angle_mean']:.4f}",
               "(baseline:", f"{baseline_nll_per_angle:.4f})")
-    print("[TorsionAR Eval] KL(data||sample):",
+    log_print("[TorsionAR Eval] KL(data||sample):",
           f"phi={summary['torsion_stats']['phi_kl_data_to_sample']:.4f},",
           f"psi={summary['torsion_stats']['psi_kl_data_to_sample']:.4f}")
-    print("[TorsionAR Eval] Wrote:", str(out_dir / "eval_summary.json"))
+    log_print("[TorsionAR Eval] Wrote:", str(out_dir / "eval_summary.json"))
 
     if not args.no_plots:
         try:
             import matplotlib.pyplot as plt
         except Exception as exc:
-            print(f"[TorsionAR Eval] matplotlib unavailable; skipping plots ({exc})")
+            log_print(f"[TorsionAR Eval] matplotlib unavailable; skipping plots ({exc})")
             return
 
         # Ramachandran scatter

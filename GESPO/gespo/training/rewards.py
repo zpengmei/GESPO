@@ -11,7 +11,7 @@ class RewardCalculator:
     """
     Computes scalar launch/trajectory rewards used by the sampler for logging.
 
-    Note: The DeepTICA/Graphormer reward paths have been removed; the active
+    Note: Legacy projector reward paths have been removed; the active
     GESPO training loop uses geom2vec_vamp for discrete starts + LOO-VAMP
     rewards and keeps only lightweight PCA-grid coverage diagnostics here.
     """
@@ -53,7 +53,7 @@ class RewardCalculator:
         self.w_launch = float(getattr(config, "novelty_launch_weight", 0.0) or 0.0)
         self.w_traj = float(getattr(config, "novelty_traj_weight", 0.0) or 0.0)
         self.w_cov = float(getattr(config, "pca_reward_weight", 0.0) or 0.0)
-        self.w_trans = float(getattr(config, "tica_start_transition_weight", 0.0) or 0.0)
+        self.w_trans = float(getattr(config, "geom2vec_start_transition_weight", 0.0) or 0.0)
         self.w_balance = float(getattr(config, "anchor_balance_weight", 0.0) or 0.0)
 
         # Reward normalization (EMA)
@@ -138,4 +138,3 @@ class RewardCalculator:
 
     def project_to_pca_2d(self, cv_vec: np.ndarray, coords_nm: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         return self._to_pca_2d(cv_vec, coords_nm)
-

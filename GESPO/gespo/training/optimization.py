@@ -91,7 +91,7 @@ class GRPOOptimizer:
                 extra_stats['adv_h_mean'] = 0.0
                 extra_stats['adv_h_std'] = 0.0
 
-        # Experimental: in DeepTICA discrete-state least-count mode (or uniform), we
+        # Experimental: in discrete-state least-count mode (or uniform), we
         # bypass the start policy entirely and should not attempt to
         # compute or update categorical start log-probs.
         if mode == 'torsion_ar':
@@ -142,7 +142,7 @@ class GRPOOptimizer:
             else:
                 # MLP / non-transformer start policy. Support both the
                 # original continuous Normal start_distribution and an
-                # optional discrete categorical start over VAMP/DeepTICA
+                # optional discrete categorical start over projection states
                 # states when discrete_state_starts is enabled.
                 if getattr(self.config, "discrete_state_starts", False):
                     old_dist_s = self.agent_old(s_feats)

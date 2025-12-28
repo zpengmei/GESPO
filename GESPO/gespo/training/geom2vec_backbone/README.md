@@ -129,6 +129,6 @@ python -m gespo.cli \
   --geom2vec-ckpt /path/to/geom2vec_rep.ckpt \
   --geom2vec-cache-root /path/to/run_snaps \
   --geom2vec-embed-stride 2 \
-  --tica-dim 16 \
-  --tica-lagtime 150
+  --geom2vec-dim 16 \
+  --geom2vec-lagtime 150
 ```

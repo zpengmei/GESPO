@@ -1,4 +1,5 @@
 from __future__ import annotations
+from gespo.utils.logging import log_print
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -303,7 +304,7 @@ def train_vamp_lobe_from_cache(
                             if lobe_import_exc is not None
                             else "unknown"
                         )
-                        print(
+                        log_print(
                             "[Geom2Vec VAMP] Warning: geom2vec Lobe unavailable; using pooled-MLP fallback "
                             f"(install torch_geometric to enable the full lobe). Reason: {reason}"
                         )
