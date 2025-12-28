@@ -34,10 +34,15 @@ class RunConfigurer:
         if not isinstance(config_dict, dict):
             return [str(config_dict)]
 
+        lines = self._format_config(config_dict)
+        lines.extend(self._format_metadata())
+        return lines
+
+    def _format_config(self, config_dict: dict) -> list[str]:
         if not any(isinstance(value, dict) for value in config_dict.values()):
             return [f"{key:24s}: {config_dict[key]}" for key in sorted(config_dict)]
 
-        lines = []
+        lines: list[str] = []
         for section, values in config_dict.items():
             if isinstance(values, dict):
                 lines.append(f"[{section}]")
@@ -45,62 +50,59 @@ class RunConfigurer:
                     lines.append(f"  {key:22s}: {value}")
             else:
                 lines.append(f"{section:24s}: {values}")
-
-        # Append generator/dataset metadata if available for clarity
-        extra = []
-        try:
-            ckpt_path = getattr(self.args, "cond_checkpoint", None)
-            if ckpt_path:
-                try:
-                    ckpt = torch.load(ckpt_path, map_location="cpu")
-                    cfg = ckpt.get("config", {}) or {}
-
-                    def add_ck(key):
-                        if key in cfg:
-                            extra.append((f"ckpt.{key}", cfg[key]))
-
-                    for k in (
-                        "conditioning_mode",
-                        "cond_injection_mode",
-                        "atom_mixer",
-                        "num_residue_sinks",
-                        "hybrid_torsion_dim",
-                        "hybrid_pair_dim",
-                        "diffusion_steps",
-                    ):
-                        add_ck(k)
-                except Exception:
-                    pass
-            data_path = getattr(self.args, "cond_data", None)
-            if data_path:
-                try:
-                    data = np.load(data_path)
-
-                    def get_arr(name):
-                        if name in data.files:
-                            val = data.get(name)
-                            try:
-                                return val.item() if hasattr(val, "item") else int(val)
-                            except Exception:
-                                return val
-                        return None
-
-                    cmode = get_arr("conditioning_mode")
-                    if cmode is not None:
-                        extra.append(("data.conditioning_mode", cmode))
-                    ht = get_arr("hybrid_torsion_dim")
-                    if ht is not None:
-                        extra.append(("data.hybrid_torsion_dim", ht))
-                    hp = get_arr("hybrid_pair_dim")
-                    if hp is not None:
-                        extra.append(("data.hybrid_pair_dim", hp))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        for k, v in extra:
-            lines.append(f"{k:24s}: {v}")
         return lines
+
+    def _format_metadata(self) -> list[str]:
+        extra = [*self._extract_ckpt_metadata(), *self._extract_dataset_metadata()]
+        return [f"{key:24s}: {value}" for key, value in extra]
+
+    def _extract_ckpt_metadata(self) -> list[tuple[str, object]]:
+        ckpt_path = getattr(self.args, "cond_checkpoint", None)
+        if not ckpt_path:
+            return []
+
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            cfg = ckpt.get("config", {}) or {}
+        except Exception:
+            return []
+
+        keys = (
+            "conditioning_mode",
+            "cond_injection_mode",
+            "atom_mixer",
+            "num_residue_sinks",
+            "hybrid_torsion_dim",
+            "hybrid_pair_dim",
+            "diffusion_steps",
+        )
+        return [(f"ckpt.{key}", cfg[key]) for key in keys if key in cfg]
+
+    def _extract_dataset_metadata(self) -> list[tuple[str, object]]:
+        data_path = getattr(self.args, "cond_data", None)
+        if not data_path:
+            return []
+
+        try:
+            data = np.load(data_path)
+        except Exception:
+            return []
+
+        def get_arr(name: str) -> Optional[object]:
+            if name not in data.files:
+                return None
+            val = data.get(name)
+            try:
+                return val.item() if hasattr(val, "item") else int(val)
+            except Exception:
+                return val
+
+        values = [
+            ("data.conditioning_mode", get_arr("conditioning_mode")),
+            ("data.hybrid_torsion_dim", get_arr("hybrid_torsion_dim")),
+            ("data.hybrid_pair_dim", get_arr("hybrid_pair_dim")),
+        ]
+        return [(key, value) for key, value in values if value is not None]
 
     def print_summary(self) -> None:
         logger.info("=== Configuration Summary ===")
