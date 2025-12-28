@@ -1,11 +1,10 @@
 import torch
 import numpy as np
-import os
 import math
 from typing import Tuple, List, Any
 from ...config import TrainingConfig
 from ...sampling import PeptideSampler
-from ..policies.rl import GRPOAgent, ResidueTransformerPolicy
+from ..policies.rl import ResidueTransformerPolicy
 from .scorer import VendiNovelty, PCAScorer
 from gespo.utils.logging import log_print
 
@@ -64,7 +63,7 @@ def _validate_model_consistency(config: TrainingConfig, env: PeptideSampler) -> 
             )
     
     # Check 3: For hybrid mode with Transformer policy, verify per-residue conditioning
-    if policy_mode == "hybrid" and config.policy_type != "mlp":
+    if policy_mode == "hybrid" and not getattr(config, "discrete_state_starts", False):
         # Check if generator was trained with per-residue conditioning
         per_res_torsion = getattr(gen, 'per_res_torsion', False)
         cond_injection = getattr(gen, 'cond_injection_mode', 'global')
@@ -116,10 +115,15 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
     # Validate model consistency before initialization
     _validate_model_consistency(config, env)
     
-    # Check if using transformer policy
-    use_transformer = (config.policy_type != "mlp")
-    
-    if use_transformer:
+    if getattr(config, "discrete_state_starts", False):
+        from ..policies.rl import StateLogitPolicy
+        proj_mode = str(getattr(config, "projection", "pca")).lower()
+        if proj_mode not in {"geom2vec_vamp"}:
+            raise ValueError("Discrete-state starts require --projection=geom2vec_vamp.")
+        num_states = int(getattr(config, "geom2vec_dim", 8) or 8)
+        agent = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
+        agent_old = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
+    else:
         # Transformer policy works on per-residue features
         num_residues = env.n_residues
         feature_dim = env.per_residue_feature_dim
@@ -150,7 +154,7 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
             pair_dim=pair_dim
         ).to(device)
         
-        if config.use_bias:
+        if getattr(config, "use_bias", False):
             log_print("[WARN] Transformer policy ignores metadynamics hill control; --use-bias is currently inactive.")
 
         # Initialize transformer output uncertainties to be reasonably tight so
@@ -165,94 +169,9 @@ def initialize_policy(config: TrainingConfig, envs: List[PeptideSampler], device
                 init_pair_log_std = math.log(1.0)
                 agent.pair_log_std.fill_(init_pair_log_std)
         
-    else:
-        # MLP policy uses state conditioning
-        # Determine dimensions based on conditioning mode
-        # For discrete-state start runs (e.g. geom2vec+VAMP),
-        # use a state-conditioned categorical policy over K states instead
-        # of a continuous CV policy. The number of states matches the
-        # projector softmax dimension (config.geom2vec_dim).
-        proj_mode = str(getattr(config, "projection", "pca")).lower()
-        if getattr(config, "discrete_state_starts", False) and proj_mode in {"geom2vec_vamp"}:
-            from ..policies.rl import StateLogitPolicy
-            num_states = int(getattr(config, "geom2vec_dim", 8) or 8)
-            # Use a global categorical distribution over states (no feature conditioning).
-            agent = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
-            agent_old = StateLogitPolicy(num_states=num_states, feature_dim=None).to(device)
-        else:
-            if config.policy_conditioning_mode == "torsion":
-                cond_dim = env.n_cvs * 3  # [angles, cos, sin]
-            elif config.policy_conditioning_mode == "pairwise":
-                # FIX: Fallback dimension should match env.state() fallback (torsion vec is 3x)
-                cond_dim = getattr(gen, 'pair_feature_dim', env.n_cvs * 3)
-            elif config.policy_conditioning_mode == "hybrid":
-                hybrid_pair_dim = getattr(gen, 'hybrid_pair_dim', 0)
-                cond_dim = (env.n_cvs * 3) + hybrid_pair_dim  # torsion_vec + pair features
-            elif config.policy_conditioning_mode == "ca":
-                # For CA mode, use number of CA atoms * 3 (x,y,z)
-                cond_dim = len(getattr(env, 'ca_atom_indices', [])) * 3
-            elif config.policy_conditioning_mode == "ca_torsion":
-                # CA block (aligned coordinates) plus torsion sin/cos block.
-                # Matches env.state() which returns: n_ca*3 + 2*n_cvs.
-                n_ca = len(getattr(env, 'ca_atom_indices', []))
-                cond_dim = (n_ca * 3) + (env.n_cvs * 2)
-            else:
-                raise ValueError(f"Unknown conditioning mode: {config.policy_conditioning_mode}")
-            
-            agent = GRPOAgent(
-                state_dim=cond_dim,
-                action_dim=env.n_cvs,
-                num_mixtures=config.num_mixtures,
-                hidden_dim=256
-            ).to(device)
-            
-            agent_old = GRPOAgent(
-                state_dim=cond_dim,
-                action_dim=env.n_cvs,
-                num_mixtures=config.num_mixtures,
-                hidden_dim=256
-            ).to(device)
-
-            # Initialize start CV distribution around the current environment
-            # torsions (typically the reference PDB) with a reasonably small
-            # standard deviation so early starts are not purely random.
-            with torch.no_grad():
-                try:
-                    baseline_cv = torch.as_tensor(env.cv_values, dtype=torch.float32, device=device)
-                    if baseline_cv.numel() == env.n_cvs and baseline_cv.numel() == agent.start_mu.numel():
-                        agent.start_mu.copy_(baseline_cv)
-                        agent_old.start_mu.copy_(baseline_cv)
-                        log_print(f"[Init] Initialized start_mu from environment CVs")
-                    else:
-                        log_print(f"[Init] CV shape mismatch: env={baseline_cv.numel()}, policy={agent.start_mu.numel()}")
-                except Exception as e:
-                    # If cv_values are unavailable, keep the default zero mean.
-                    log_print(f"[Init] Could not initialize start_mu from env: {e}")
-                # Use a moderate angular spread (e.g., ~30 degrees) for starts.
-                init_start_std = math.pi / 6.0  # ~30°
-                init_start_log_std = math.log(init_start_std)
-                agent.log_std_s.fill_(init_start_log_std)
-
     # Initialize Old Policy
-    # CRITICAL: For both Transformer and MLP, agent_old must be synced with agent
-    # to ensure PPO ratios start from 1.0 (identical policies).
-    if config.old_init == "copy":
-        agent_old.load_state_dict(agent.state_dict())
-    elif config.old_init == "perturb":
-        agent_old.load_state_dict(agent.state_dict())
-        with torch.no_grad():
-            for p in agent_old.parameters():
-                p.add_(torch.randn_like(p) * config.old_perturb_scale)
-    elif config.old_init == "normal":
-        # Default random init - but still sync to avoid garbage initial ratios
-        # unless explicitly testing with independent initialization
-        agent_old.load_state_dict(agent.state_dict())
-    elif config.old_init == "random":
-        # Truly independent random initialization (usually not recommended)
-        pass
-    else:
-        # Default to copy for safety
-        agent_old.load_state_dict(agent.state_dict())
+    # CRITICAL: agent_old must be synced with agent to ensure PPO ratios start at 1.0.
+    agent_old.load_state_dict(agent.state_dict())
 
     agent_old.eval()
 

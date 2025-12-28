@@ -101,6 +101,22 @@ def compute_pairwise_distances_per_residue(traj, step=10, min_separation=10):
     return pair_distances.astype(np.float32), pair_mask, partner_residues
 
 
+def _collect_traj_files(traj_dir: str, traj_pattern: str | Iterable[str]) -> list[Path]:
+    traj_dir_path = Path(traj_dir)
+    patterns = traj_pattern if isinstance(traj_pattern, (list, tuple)) else [traj_pattern]
+    traj_files: list[Path] = []
+    # Support both relative patterns (from traj_dir) and absolute patterns.
+    for pattern in patterns:
+        pattern_str = str(pattern)
+        if os.path.isabs(pattern_str):
+            matches = _glob.glob(pattern_str, recursive=True)
+        else:
+            combined = str(traj_dir_path / pattern_str)
+            matches = _glob.glob(combined, recursive=True)
+        traj_files.extend(Path(p) for p in matches)
+    return sorted({path for path in traj_files})
+
+
 def _torsion_residue_indices(reference, torsion_indices):
     indices = []
     for torsion in torsion_indices:
@@ -155,21 +171,9 @@ def prepare_dataset(
     pca_balance_fit_cap: int = 50000,
     pca_balance_plot: str | None = None,
 ) -> Path:
-    traj_dir_path = Path(traj_dir)
-    patterns = traj_pattern if isinstance(traj_pattern, (list, tuple)) else [traj_pattern]
-    traj_files = []
-    # Support both relative patterns (from traj_dir) and absolute patterns.
-    for pattern in patterns:
-        pattern_str = str(pattern)
-        if os.path.isabs(pattern_str):
-            matches = _glob.glob(pattern_str, recursive=True)
-        else:
-            combined = str(traj_dir_path / pattern_str)
-            matches = _glob.glob(combined, recursive=True)
-        traj_files.extend(Path(p) for p in matches)
-    traj_files = sorted({path for path in traj_files})
+    traj_files = _collect_traj_files(traj_dir, traj_pattern)
     if not traj_files:
-        raise FileNotFoundError(f"No trajectories matching {patterns} in {traj_dir}")
+        raise FileNotFoundError(f"No trajectories matching {traj_pattern} in {traj_dir}")
 
     reference = md.load(pdb_path)
     topology = reference.topology
