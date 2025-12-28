@@ -2,15 +2,16 @@
 from ._imports import *
 from .training import train
 from .utils.config import RunConfigurer
+from .utils.logging import configure_logging
 from .config import TrainingConfig
 import os
 import copy
 import pickle
 import argparse
-import sys
-import atexit
-import datetime as _dt
 import warnings
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _fit_tica_from_dcd(base_dirs,
                        pdb_path: str,
@@ -35,12 +36,12 @@ def _fit_tica_from_dcd(base_dirs,
     pdb_path = os.path.abspath(pdb_path)
     out_path = os.path.abspath(out_path)
 
-    print(f"[TICA] Fitting TICA from DCDs under:")
+    logger.info("Fitting TICA from DCDs under:")
     for d in base_dirs:
-        print(f"  - {d}")
-    print(f"[TICA] Using reference PDB: {pdb_path}")
-    print(f"[TICA] Output model path: {out_path}")
-    print(f"[TICA] Settings: lagtime={lagtime} frames, dim={dim}, stride={stride}")
+        logger.info("  - %s", d)
+    logger.info("Using reference PDB: %s", pdb_path)
+    logger.info("Output model path: %s", out_path)
+    logger.info("Settings: lagtime=%s frames, dim=%s, stride=%s", lagtime, dim, stride)
 
     ref = md.load(pdb_path)
     dcd_files = []
@@ -62,7 +63,7 @@ def _fit_tica_from_dcd(base_dirs,
             tr = tr.superpose(ref)
             trajs.append(tr)
         except Exception as exc:
-            print(f"[TICA] Skipping {fpath}: {exc}")
+            logger.warning("Skipping %s: %s", fpath, exc)
             continue
 
     if not trajs:
@@ -74,7 +75,7 @@ def _fit_tica_from_dcd(base_dirs,
         X = ca.xyz.reshape(ca.n_frames, -1)  # nm, flattened
         ca_list.append(X.astype(np.float32))
 
-    print(f"[TICA] Prepared {len(ca_list)} CA feature arrays.")
+    logger.info("Prepared %s CA feature arrays.", len(ca_list))
     tica = TICA(lagtime=lagtime, dim=dim)
     tica.fit(ca_list)
 
@@ -83,51 +84,9 @@ def _fit_tica_from_dcd(base_dirs,
         os.makedirs(out_dir, exist_ok=True)
     with open(out_path, "wb") as f:
         pickle.dump(tica, f)
-    print(f"[TICA] Saved TICA model to {out_path}")
-
-def _setup_logging(log_file: str):
-    """Set up console tee logging to a file."""
-    try:
-        _log_path = log_file or os.path.join(os.getcwd(), "gespo_run.log")
-        _log_dir = os.path.dirname(_log_path)
-        if _log_dir:
-            os.makedirs(_log_dir, exist_ok=True)
-        _log_fh = open(_log_path, "a", buffering=1)
-        _ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _log_fh.write(f"\n===== GESPO run started at {_ts} =====\n")
-        
-        class _Tee:
-            def __init__(self, stream, logfh):
-                self._stream = stream
-                self._log = logfh
-            def write(self, data):
-                try: self._stream.write(data)
-                except: pass
-                try: self._log.write(data)
-                except: pass
-            def flush(self):
-                try: self._stream.flush()
-                except: pass
-                try: self._log.flush()
-                except: pass
-                
-        sys.stdout = _Tee(sys.stdout, _log_fh)
-        sys.stderr = _Tee(sys.stderr, _log_fh)
-        
-        def _close_log():
-            try:
-                _log_fh.flush()
-                _log_fh.close()
-            except: pass
-            
-        atexit.register(_close_log)
-        print(f"[Log] Capturing stdout/stderr to {_log_path}")
-    except Exception:
-        pass
+    logger.info("Saved TICA model to %s", out_path)
 
 def main():
-    print("[DEBUG cli.main] Entered main()")
-
     def _suffix_dir(path: str, suffix: str) -> str:
         """Append a subdirectory suffix if path is non-empty."""
         if not path:
@@ -183,10 +142,8 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter,
     )
     
-    print("[DEBUG cli.main] Parser created, populating arguments...")
     # Populate arguments from centralized config
     TrainingConfig.populate_parser(parser)
-    print("[DEBUG cli.main] Arguments populated")
     
     # Add CLI-specific arguments not in TrainingConfig (utilities)
     parser.add_argument(
@@ -211,6 +168,16 @@ def main():
         "--log-file",
         default="",
         help="Path to log file.",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level (e.g., DEBUG, INFO, WARNING).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging.",
     )
     parser.add_argument(
         "--config-log",
@@ -276,9 +243,7 @@ def main():
         ),
     )
 
-    print("[DEBUG cli.main] Parsing arguments...")
     args = parser.parse_args()
-    print("[DEBUG cli.main] Arguments parsed successfully")
     
     # Extract device index from gen_device for OpenMM platform
     if hasattr(args, 'gen_device'):
@@ -292,15 +257,18 @@ def main():
     else:
         args.device = 0
 
-    _setup_logging(args.log_file)
+    log_level = args.log_level
+    if args.verbose:
+        log_level = "DEBUG"
+    configure_logging(log_level=log_level, log_file=args.log_file)
+    logger.debug("Logging configured with level=%s file=%s", log_level, args.log_file)
 
     if args.suppress_warnings:
         warnings.filterwarnings("ignore")
 
-    print("[DEBUG cli.main] Checking for offline TICA fitting...")
     # Offline TICA fitting
     if args.fit_tica_from_dcd:
-        print("[DEBUG cli.main] Running offline TICA fitting")
+        logger.info("Running offline TICA fitting")
         tica_out = args.tica_out or "tica_model.pkl"
         _fit_tica_from_dcd(
             base_dirs=args.fit_tica_from_dcd,
@@ -319,7 +287,7 @@ def main():
         out_path = args.torsion_ar_out
         epochs = int(getattr(args, "torsion_ar_epochs", 10) or 10)
         batch_size = int(getattr(args, "torsion_ar_batch_size", 64) or 64)
-        print(f"[DEBUG cli.main] Running TorsionAR pretraining on {source_path}")
+        logger.info("Running TorsionAR pretraining on %s", source_path)
         pretrain_torsion_ar(
             source_path=source_path,
             out_path=out_path,
@@ -331,9 +299,7 @@ def main():
         )
         return
 
-    print("[DEBUG cli.main] Creating RunConfigurer...")
     configurer = RunConfigurer(args, log_dir=args.config_log)
-    print("[DEBUG cli.main] Printing config summary for base configuration...")
     configurer.print_summary()
 
     # Number of independent repetitions per experiment
@@ -354,38 +320,31 @@ def main():
             primary_args = _make_experiment_args(args, mode="primary", label=rep_label)
         else:
             primary_args = args
-        print(f"[DEBUG cli.main] Creating RunConfigurer for primary run{rep_note}...")
         primary_configurer = RunConfigurer(primary_args, log_dir=getattr(primary_args, "config_log", ""))
-        print(f"[DEBUG cli.main] Printing config summary for primary run{rep_note}...")
         primary_configurer.print_summary()
-        print(f"[DEBUG cli.main] Starting training (primary run{rep_note})...")
+        logger.info("Starting training (primary run%s)...", rep_note)
         train(primary_args)
-        print(f"[DEBUG cli.main] Primary training complete{rep_note}")
+        logger.info("Primary training complete%s", rep_note)
 
         # Optional: run extra ablation experiments with modified start policies
         if getattr(args, "run_extra_exp", False):
             # Least-counting starts experiment
             least_label = f"least_count_{rep_label}" if repeat > 1 else "least_count"
             least_args = _make_experiment_args(args, mode="least", label=least_label)
-            print(f"[DEBUG cli.main] Creating RunConfigurer for least-count experiment{rep_note}...")
             least_configurer = RunConfigurer(least_args, log_dir=getattr(least_args, "config_log", ""))
-            print(f"[DEBUG cli.main] Printing config summary for least-count experiment{rep_note}...")
             least_configurer.print_summary()
-            print(f"[DEBUG cli.main] Starting training (least-count experiment{rep_note})...")
+            logger.info("Starting training (least-count experiment%s)...", rep_note)
             train(least_args)
-            print(f"[DEBUG cli.main] Least-count experiment complete{rep_note}")
+            logger.info("Least-count experiment complete%s", rep_note)
 
             # Uniform random starts experiment
             uniform_label = f"uniform_{rep_label}" if repeat > 1 else "uniform"
             uniform_args = _make_experiment_args(args, mode="uniform", label=uniform_label)
-            print(f"[DEBUG cli.main] Creating RunConfigurer for uniform-start experiment{rep_note}...")
             uniform_configurer = RunConfigurer(uniform_args, log_dir=getattr(uniform_args, "config_log", ""))
-            print(f"[DEBUG cli.main] Printing config summary for uniform-start experiment{rep_note}...")
             uniform_configurer.print_summary()
-            print(f"[DEBUG cli.main] Starting training (uniform-start experiment{rep_note})...")
+            logger.info("Starting training (uniform-start experiment%s)...", rep_note)
             train(uniform_args)
-            print(f"[DEBUG cli.main] Uniform-start experiment complete{rep_note}")
+            logger.info("Uniform-start experiment complete%s", rep_note)
 
 if __name__ == "__main__":
-    print("[DEBUG cli.py] Executing as __main__")
     main()
