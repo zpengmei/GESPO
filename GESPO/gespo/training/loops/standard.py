@@ -24,79 +24,47 @@ import mdtraj as md
 from openmm import unit
 from gespo.utils.logging import log_print
 
-from ...config import TrainingConfig
-from ...sampling import PeptideSampler
-from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
 from ...utils.geometry import _dihedral
-from ..setup import initialize_policy, initialize_projection_scorer
+from ..setup import initialize_projection_scorer
 from .anchoring import run_anchoring_round
 from .geom2vec_refresh import PolicyResetHandles, refresh_geom2vec_vamp
-from ..rl import StateLogitPolicy
 from ..features import FeatureBuilder
 from ..sampler import Sampler
 from ..checkpointing import CheckpointManager
-from ..optimization import GRPOOptimizer
 from ..rewards import RewardCalculator
 from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
 from ..geom2vec_utils import align_states_by_overlap
 from ..stats import SufficientStatistics
 
 
+from .standard_helpers import (
+    init_geom2vec_state,
+    init_history_buffers,
+    setup_training,
+)
+
+
 def train(args: argparse.Namespace):
+    """Entry point wrapper for the discrete-start training loop."""
+    return _run_training_loop(args)
+
+
+def _run_training_loop(args: argparse.Namespace):
     """
     Main training loop for GESPO with LOO VAMP + Ensemble Uncertainty rewards.
     """
-    config = TrainingConfig.from_args(args)
-    proj_mode = str(getattr(config, "projection", "geom2vec_vamp")).lower()
-    if proj_mode != "geom2vec_vamp":
-        raise ValueError(
-            "This discrete-start loop requires a discrete-state projector. "
-            f"Got --projection={proj_mode!r}; supported: geom2vec_vamp."
-        )
-    if not str(getattr(config, "geom2vec_checkpoint", "") or "").strip():
-        raise ValueError("--geom2vec-ckpt is required when --projection=geom2vec_vamp.")
-    # Force categorical discrete-state start policy
-    config.discrete_state_starts = True
-    config.policy_type = "mlp"
-    config.use_transformer_policy = False
-    
-    if not hasattr(config, 'max_pca_train') or config.max_pca_train < 100000:
-        config.max_pca_train = 100000
-    if not hasattr(config, 'history_reward_weight'):
-        config.history_reward_weight = 5.0
-    
-    torch_device = "cuda" if torch.cuda.is_available() and config.platform != "CPU" else "cpu"
-    gen_device = resolve_device(config.gen_device)
-        
-    log_print("GESPO Training with LOO VAMP (Geom2Vec, single-model)")
-    log_print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
-    log_print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
-    log_print("Geom2Vec VAMP lobe: single model (no UCB)")
-    
-    # Initialize Environments
-    log_print("Initializing environments...")
-    envs = [PeptideSampler(args, generator_device=gen_device) for _ in range(config.grp_size)]
-    env_ref = envs[0]
-    
-    # Initialize Policy
-    log_print("Initializing policy...")
-    agent, agent_old, policy_opts, _ = initialize_policy(config, envs, torch_device)
-    if not (isinstance(agent, StateLogitPolicy) and isinstance(agent_old, StateLogitPolicy)):
-        raise RuntimeError("Discrete state starts require StateLogitPolicy for both current and old policies")
-    optimizer = GRPOOptimizer(config, agent, agent_old, policy_opts)
+    config, torch_device, gen_device, envs, env_ref, agent, agent_old, optimizer = setup_training(args)
     
     # Checkpointing & History
     ckpt_manager = CheckpointManager(config)
-    all_epoch_data = []
-    all_trajectory_lengths = []
-    all_epoch_traj_dcd_paths: List[List[Optional[str]]] = []
-    # Optional: for epochs/trajectories backed by a DCD on disk, store the
-    # original frame indices used for each imported frame (e.g., after applying
-    # history_dcd_stride or RMSD filtering). For trajectories produced by the
-    # current run, this is typically None (implies 0..L-1).
-    all_epoch_traj_dcd_frame_indices: List[List[Optional[np.ndarray]]] = []
-    ep_start = 0
+    (
+        all_epoch_data,
+        all_trajectory_lengths,
+        all_epoch_traj_dcd_paths,
+        all_epoch_traj_dcd_frame_indices,
+        ep_start,
+    ) = init_history_buffers()
 
     # Global (history-aware) LOO-VAMP sufficient statistics so trajectory rewards reflect
     # the marginal improvement to VAMP-2 over the accumulated dataset.
@@ -237,23 +205,23 @@ def train(args: argparse.Namespace):
             )
 
     # Geom2Vec VAMP backbone state (only used when proj_mode == "geom2vec_vamp")
-    geom2vec_cache: Optional[EmbeddingCache] = None
-    # Softmax VAMP lobe: used for state labels and LOO-VAMP scoring.
-    geom2vec_projector: Optional[Geom2VecVAMPProjector] = None
-    # Linear VAMP lobe: optional diagnostics (kept for consistency with generative loop).
-    geom2vec_projector_linear: Optional[Geom2VecVAMPProjector] = None
-    geom2vec_state_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
-    geom2vec_state_inverse_permutation_map = np.arange(int(getattr(config, "geom2vec_dim", 2) or 2), dtype=int)
-    geom2vec_lagtime_embed = 1
-    geom2vec_embed_stride = int(getattr(config, "geom2vec_embed_stride", 2) or 2)
-    geom2vec_embed_batch_size = int(getattr(config, "geom2vec_embed_batch_size", 32) or 32)
-    geom2vec_reduction = str(getattr(config, "geom2vec_reduction", "sum") or "sum")
-    geom2vec_center_ca = bool(getattr(config, "geom2vec_center_ca", True))
-    geom2vec_hidden_channels_opt: Optional[int] = None
-    geom2vec_md_top_protein = None
-    geom2vec_topology_cache: Optional[Geom2VecTopologyCache] = None
-    geom2vec_cache_root_path: Optional[Path] = None
-    geom2vec_device_str = ""
+    (
+        geom2vec_cache,
+        geom2vec_projector,
+        geom2vec_projector_linear,
+        geom2vec_state_permutation_map,
+        geom2vec_state_inverse_permutation_map,
+        geom2vec_lagtime_embed,
+        geom2vec_embed_stride,
+        geom2vec_embed_batch_size,
+        geom2vec_reduction,
+        geom2vec_center_ca,
+        geom2vec_hidden_channels_opt,
+        geom2vec_md_top_protein,
+        geom2vec_topology_cache,
+        geom2vec_cache_root_path,
+        geom2vec_device_str,
+    ) = init_geom2vec_state(config)
 
     def _geom2vec_is_trained() -> bool:
         return geom2vec_projector is not None and getattr(geom2vec_projector, "trained", None) is not None
@@ -1220,10 +1188,12 @@ def train(args: argparse.Namespace):
                 except Exception:
                     pass
 
+            use_transformer_policy = not getattr(config, 'discrete_state_starts', False)
+
             if getattr(config, 'discrete_state_starts', False):
                 start_features = torch.zeros(config.grp_size, 1, device=torch_device)
                 raw_start_actions = start_state_actions.to(torch_device) if start_state_actions is not None else torch.zeros(config.grp_size, dtype=torch.long, device=torch_device)
-            elif config.use_transformer_policy:
+            else:
                 # Reconstruct residue features
                 feats_list = []
                 for w_idx, env in enumerate(envs):
@@ -1248,14 +1218,6 @@ def train(args: argparse.Namespace):
                 phi_exists = torch.from_numpy(envs[0]._phi_exists).to(torch_device)
                 psi_exists = torch.from_numpy(envs[0]._psi_exists).to(torch_device)
                 chan_mask = torch.stack([phi_exists, phi_exists, psi_exists, psi_exists], dim=-1).unsqueeze(0)
-                
-            else:
-                # MLP mode
-                start_features = torch.stack([torch.tensor(env.state(), device=torch_device, dtype=torch.float32) for env in envs])
-                
-                with torch.no_grad():
-                    dist_old_s = agent_old.start_distribution(config.grp_size)
-                    raw_start_actions = dist_old_s.rsample()
             
             # Align mask device with rewards
             valid_mask = metrics.get('valid_mask', torch.ones(config.grp_size, dtype=torch.bool, device=torch_device))
@@ -1280,7 +1242,7 @@ def train(args: argparse.Namespace):
                 'pair_actions': pair_actions_for_opt,
                 'rewards': reward_tensors.get('launch', torch.zeros(config.grp_size, device=torch_device)),
                 'valid_mask': valid_mask,
-                'use_transformer': config.use_transformer_policy,
+                'use_transformer': use_transformer_policy,
                 'chan_mask': chan_mask
             }
             

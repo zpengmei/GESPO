@@ -1,64 +1,82 @@
 """CLI entrypoint (argument parsing and dispatch to training or utilities)."""
-from ._imports import *
 from .training import train
 from .utils.config import RunConfigurer
 from .utils.logging import configure_logging
 from .config import TrainingConfig
-import os
-import copy
 import argparse
-import warnings
+import copy
 import logging
+import os
+import warnings
 
 logger = logging.getLogger(__name__)
 
-def main():
-    def _suffix_dir(path: str, suffix: str) -> str:
-        """Append a subdirectory suffix if path is non-empty."""
-        if not path:
-            return path
-        return os.path.join(path, suffix)
+def _suffix_dir(path: str, suffix: str) -> str:
+    """Append a subdirectory suffix if path is non-empty."""
+    if not path:
+        return path
+    return os.path.join(path, suffix)
 
-    def _suffix_file(path: str, suffix: str) -> str:
-        """Append a suffix before file extension if path is non-empty."""
-        if not path:
-            return path
-        base, ext = os.path.splitext(path)
-        return f"{base}_{suffix}{ext}"
+def _suffix_file(path: str, suffix: str) -> str:
+    """Append a suffix before file extension if path is non-empty."""
+    if not path:
+        return path
+    base, ext = os.path.splitext(path)
+    return f"{base}_{suffix}{ext}"
 
-    def _make_experiment_args(base_args: argparse.Namespace, mode: str, label: str) -> argparse.Namespace:
-        """
-        Create a deep-copied args namespace for an auxiliary experiment
-        (e.g., least-count or uniform starts) with output paths redirected
-        into separate subfolders / files.
-        """
-        exp_args = copy.deepcopy(base_args)
+def _make_experiment_args(base_args: argparse.Namespace, label: str) -> argparse.Namespace:
+    """
+    Create a deep-copied args namespace for an auxiliary experiment
+    with output paths redirected into separate subfolders / files.
+    """
+    exp_args = copy.deepcopy(base_args)
 
-        # Toggle start-mode flags for the experiment.
-        if mode == "least":
-            setattr(exp_args, "least_count_starts", True)
-            setattr(exp_args, "uniform_starts", False)
-        elif mode == "uniform":
-            setattr(exp_args, "uniform_starts", True)
-            setattr(exp_args, "least_count_starts", False)
-        # mode == "primary": keep user-provided flags as-is
+    # Redirect checkpoint/snapshot/stats outputs if the user provided paths.
+    ckpt_dir = getattr(base_args, "checkpoint_dir", "")
+    snap_dir = getattr(base_args, "snapshot_dir", "")
+    stats_log = getattr(base_args, "stats_log", "")
+    config_log = getattr(base_args, "config_log", "")
 
-        # Redirect checkpoint/snapshot/stats outputs if the user provided paths.
-        ckpt_dir = getattr(base_args, "checkpoint_dir", "")
-        snap_dir = getattr(base_args, "snapshot_dir", "")
-        stats_log = getattr(base_args, "stats_log", "")
-        config_log = getattr(base_args, "config_log", "")
+    if ckpt_dir:
+        setattr(exp_args, "checkpoint_dir", _suffix_dir(ckpt_dir, label))
+    if snap_dir:
+        setattr(exp_args, "snapshot_dir", _suffix_dir(snap_dir, label))
+    if stats_log:
+        setattr(exp_args, "stats_log", _suffix_file(stats_log, label))
+    if config_log:
+        setattr(exp_args, "config_log", _suffix_dir(config_log, label))
 
-        if ckpt_dir:
-            setattr(exp_args, "checkpoint_dir", _suffix_dir(ckpt_dir, label))
-        if snap_dir:
-            setattr(exp_args, "snapshot_dir", _suffix_dir(snap_dir, label))
-        if stats_log:
-            setattr(exp_args, "stats_log", _suffix_file(stats_log, label))
-        if config_log:
-            setattr(exp_args, "config_log", _suffix_dir(config_log, label))
+    return exp_args
 
-        return exp_args
+
+def _extract_openmm_device(gen_device: str | None) -> int:
+    if not gen_device:
+        return 0
+    if gen_device.startswith("cuda:"):
+        return int(gen_device.split(":")[1])
+    if gen_device.isdigit():
+        return int(gen_device)
+    return 0
+
+
+def _normalize_repeat(value: object, default: int = 3) -> int:
+    try:
+        repeat = int(value)
+    except Exception:
+        repeat = default
+    return max(1, repeat)
+
+
+def _run_experiment(args: argparse.Namespace, label: str, rep_note: str) -> None:
+    configurer = RunConfigurer(args, log_dir=getattr(args, "config_log", ""))
+    configurer.print_summary()
+    configurer.dump()
+    logger.info("Starting training (%s run%s)...", label, rep_note)
+    train(args)
+    logger.info("%s run complete%s", label.capitalize(), rep_note)
+
+
+def main() -> None:
 
     parser = argparse.ArgumentParser(
         description=(
@@ -100,15 +118,6 @@ def main():
         help="Repeat each configured experiment N times (independent runs).",
     )
     parser.add_argument("--suppress-warnings", action="store_true", help="Suppress warnings.")
-    parser.add_argument(
-        "--run-extra-exp",
-        dest="run_extra_exp",
-        action="store_true",
-        help=(
-            "Run additional ablation experiments with least-counting and uniform "
-            "discrete-state starts in separate output folders (checkpoint/snapshot/stats)."
-        ),
-    )
     parser.add_argument(
         "--pretrain-torsion-ar",
         default="",
@@ -152,18 +161,9 @@ def main():
     )
 
     args = parser.parse_args()
-    
+
     # Extract device index from gen_device for OpenMM platform
-    if hasattr(args, 'gen_device'):
-        gen_device_str = args.gen_device
-        if gen_device_str.startswith("cuda:"):
-            args.device = int(gen_device_str.split(":")[1])
-        elif gen_device_str.isdigit():
-            args.device = int(gen_device_str)
-        else:
-            args.device = 0  # default to 0 for cpu or other
-    else:
-        args.device = 0
+    args.device = _extract_openmm_device(getattr(args, "gen_device", None))
 
     log_level = args.log_level
     if args.verbose:
@@ -193,52 +193,16 @@ def main():
         )
         return
 
-    configurer = RunConfigurer(args, log_dir=args.config_log)
-    configurer.print_summary()
-
     # Number of independent repetitions per experiment
-    repeat = getattr(args, "repeat_exp", 3)
-    try:
-        repeat = int(repeat)
-    except Exception:
-        repeat = 3
-    if repeat < 1:
-        repeat = 1
+    repeat = _normalize_repeat(getattr(args, "repeat_exp", 3))
 
     for rep_idx in range(repeat):
-        rep_label = f"rep{rep_idx+1}"
+        rep_label = f"rep{rep_idx+1}" if repeat > 1 else ""
         rep_note = f" (repeat {rep_idx+1}/{repeat})" if repeat > 1 else ""
 
         # Primary run for this repetition
-        if repeat > 1:
-            primary_args = _make_experiment_args(args, mode="primary", label=rep_label)
-        else:
-            primary_args = args
-        primary_configurer = RunConfigurer(primary_args, log_dir=getattr(primary_args, "config_log", ""))
-        primary_configurer.print_summary()
-        logger.info("Starting training (primary run%s)...", rep_note)
-        train(primary_args)
-        logger.info("Primary training complete%s", rep_note)
-
-        # Optional: run extra ablation experiments with modified start policies
-        if getattr(args, "run_extra_exp", False):
-            # Least-counting starts experiment
-            least_label = f"least_count_{rep_label}" if repeat > 1 else "least_count"
-            least_args = _make_experiment_args(args, mode="least", label=least_label)
-            least_configurer = RunConfigurer(least_args, log_dir=getattr(least_args, "config_log", ""))
-            least_configurer.print_summary()
-            logger.info("Starting training (least-count experiment%s)...", rep_note)
-            train(least_args)
-            logger.info("Least-count experiment complete%s", rep_note)
-
-            # Uniform random starts experiment
-            uniform_label = f"uniform_{rep_label}" if repeat > 1 else "uniform"
-            uniform_args = _make_experiment_args(args, mode="uniform", label=uniform_label)
-            uniform_configurer = RunConfigurer(uniform_args, log_dir=getattr(uniform_args, "config_log", ""))
-            uniform_configurer.print_summary()
-            logger.info("Starting training (uniform-start experiment%s)...", rep_note)
-            train(uniform_args)
-            logger.info("Uniform-start experiment complete%s", rep_note)
+        primary_args = _make_experiment_args(args, label=rep_label) if rep_label else args
+        _run_experiment(primary_args, "primary", rep_note)
 
 if __name__ == "__main__":
     main()

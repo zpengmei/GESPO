@@ -28,11 +28,8 @@ import openmm
 import torch
 from openmm import unit
 from openmm.app import Modeller, Simulation
-from ...config import TrainingConfig
-from ...sampling import PeptideSampler
 from ...utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_frames
 from ...utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
-from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_analysis_summary, plot_ramachandran_by_residue
 from ..checkpointing import CheckpointManager
 from ..features import FeatureBuilder
@@ -40,7 +37,6 @@ from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecV
 from ..geom2vec_utils import align_states_by_overlap
 from ..optimization import GRPOOptimizer
 from ..rewards import RewardCalculator
-from ..rl import StateLogitPolicy, TorsionARPolicy
 from ..sampler import Sampler
 from ..setup import initialize_projection_scorer
 from ..stats import SufficientStatistics
@@ -54,166 +50,35 @@ from ..torsion_retrieval import (
     pairwise_sq_l2,
     sample_from_topk,
 )
+from .generative_helpers import (
+    init_history_buffers,
+    init_retrieval_history,
+    init_vamp_stats_state,
+    setup_training,
+)
 
 
 def train(args: argparse.Namespace) -> None:
-    config = TrainingConfig.from_args(args)
-    proj_mode = str(getattr(config, "projection", "geom2vec_vamp")).lower()
-    if proj_mode != "geom2vec_vamp":
-        raise ValueError(
-            "The generative loop requires --projection=geom2vec_vamp. "
-            f"Got --projection={proj_mode!r}."
-        )
-    if not str(getattr(config, "geom2vec_checkpoint", "") or "").strip():
-        raise ValueError("--geom2vec-ckpt is required when --projection=geom2vec_vamp.")
+    """Entry point wrapper for the generative training loop."""
+    return _run_training_loop(args)
 
-    # Generative loop uses continuous torsion-based starts, not discrete state starts.
-    config.discrete_state_starts = False
-    # The generative loop uses torsion starts, but we still maintain a softmax
-    # VAMP lobe (for LOO scoring / state labels) alongside a linear lobe (for
-    # continuous diagnostics / binning).
 
-    if not hasattr(config, "max_pca_train") or config.max_pca_train < 100000:
-        config.max_pca_train = 100000
-    if not hasattr(config, "history_reward_weight"):
-        config.history_reward_weight = 5.0
-
-    torch_device = "cuda" if torch.cuda.is_available() and config.platform != "CPU" else "cpu"
-    gen_device = resolve_device(config.gen_device)
-
-    log_print("GESPO Training (generative loop) with geom2vec VAMP + LOO rewards")
-    log_print(f"Episodes: {config.episodes}, Walkers: {config.grp_size}")
-    log_print(f"Platform: {config.platform}, Device: {torch_device}, Gen Device: {gen_device}")
-
-    # Initialize Environments
-    log_print("Initializing environments...")
-    envs = [PeptideSampler(args, generator_device=gen_device) for _ in range(config.grp_size)]
-    env_ref = envs[0]
-
-    # ------------------------------------------------------------------
-    # TorsionAR metadata: residue types and angle mask
-    # ------------------------------------------------------------------
-    three_to_one = {
-        "ALA": "A",
-        "CYS": "C",
-        "ASP": "D",
-        "GLU": "E",
-        "PHE": "F",
-        "GLY": "G",
-        "HIS": "H",
-        "ILE": "I",
-        "LYS": "K",
-        "LEU": "L",
-        "MET": "M",
-        "ASN": "N",
-        "PRO": "P",
-        "GLN": "Q",
-        "ARG": "R",
-        "SER": "S",
-        "THR": "T",
-        "VAL": "V",
-        "TRP": "W",
-        "TYR": "Y",
-    }
-    aa_order = "ACDEFGHIKLMNPQRSTVWY"
-    aa_to_idx = {aa: i for i, aa in enumerate(aa_order)}
-    fallback_idx = len(aa_to_idx)
-    try:
-        ref_top = md.load(config.pdb).topology
-        res_codes = [three_to_one.get(res.name.upper(), "X") for res in ref_top.residues]
-        residue_types_1d = np.array([aa_to_idx.get(code, fallback_idx) for code in res_codes], dtype=np.int64)
-    except Exception as exc_rt:
-        log_print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
-        residue_types_1d = np.zeros((env_ref.n_residues,), dtype=np.int64)
-
-    if residue_types_1d.shape[0] != env_ref.n_residues:
-        log_print(
-            f"[TorsionAR] Warning: residue type length {residue_types_1d.shape[0]} != env.n_residues {env_ref.n_residues}; "
-            "truncating/padding."
-        )
-        if residue_types_1d.shape[0] > env_ref.n_residues:
-            residue_types_1d = residue_types_1d[: env_ref.n_residues]
-        else:
-            pad = np.full((env_ref.n_residues - residue_types_1d.shape[0],), fallback_idx, dtype=np.int64)
-            residue_types_1d = np.concatenate([residue_types_1d, pad], axis=0)
-
-    residue_types_tensor = torch.as_tensor(residue_types_1d, device=torch_device, dtype=torch.long)
-    residue_types_batch = residue_types_tensor.unsqueeze(0).expand(config.grp_size, -1)
-
-    phi_exists = torch.from_numpy(env_ref._phi_exists.astype(bool)).to(torch_device)
-    psi_exists = torch.from_numpy(env_ref._psi_exists.astype(bool)).to(torch_device)
-    omega_exists = phi_exists & psi_exists
-    angle_mask_1d = torch.stack([phi_exists, psi_exists, omega_exists], dim=-1)  # [L,3]
-    angle_mask_batch = angle_mask_1d.unsqueeze(0).expand(config.grp_size, -1, -1)
-
-    # Initialize TorsionAR start policy
-    log_print("Initializing torsion autoregressive policy...")
-    torsion_ckpt = getattr(args, "torsion_ar_checkpoint", "")
-    if not torsion_ckpt:
-        torsion_ckpt = getattr(args, "torsion_ar_out", "")
-    if torsion_ckpt and not os.path.isfile(torsion_ckpt):
-        log_print(f"[TorsionAR] Checkpoint '{torsion_ckpt}' not found; starting from scratch.")
-        torsion_ckpt = ""
-
-    ar_cfg: Dict[str, Any] = {}
-    global_token_names: List[str] = []
-    if torsion_ckpt:
-        payload = torch.load(torsion_ckpt, map_location=torch_device)
-        ar_cfg = payload.get("config", {}) or {}
-        num_residues = int(ar_cfg.get("num_residues", env_ref.n_residues))
-        residue_vocab_size = int(ar_cfg.get("residue_vocab_size", int(residue_types_1d.max()) + 1))
-        d_model = int(ar_cfg.get("d_model", 256))
-        n_heads = int(ar_cfg.get("n_heads", 8))
-        n_layers = int(ar_cfg.get("n_layers", 4))
-        kmix = int(ar_cfg.get("kmix", 8))
-        n_global_tokens = int(ar_cfg.get("n_global_tokens", 0) or 0)
-        names_cfg = ar_cfg.get("global_token_names")
-        if isinstance(names_cfg, (list, tuple)) and len(names_cfg) == n_global_tokens:
-            global_token_names = [str(x) for x in names_cfg]
-        else:
-            if n_global_tokens == 2:
-                global_token_names = ["rmsd_nm", "e2e_nm"]
-            elif n_global_tokens == len(ADK_GLOBAL_TOKEN_NAMES):
-                global_token_names = list(ADK_GLOBAL_TOKEN_NAMES)
-            else:
-                global_token_names = [f"global_{i}" for i in range(max(0, n_global_tokens))]
-        if num_residues != env_ref.n_residues:
-            raise RuntimeError(
-                f"TorsionAR checkpoint expects {num_residues} residues but env has {env_ref.n_residues}."
-            )
-        agent = TorsionARPolicy(
-            num_residues=num_residues,
-            residue_vocab_size=residue_vocab_size,
-            d_model=d_model,
-            nhead=n_heads,
-            num_layers=n_layers,
-            dropout=0.1,
-            kmix=kmix,
-            n_global_tokens=n_global_tokens,
-        ).to(torch_device)
-        agent.load_state_dict(payload["state_dict"], strict=True)
-        agent_old = TorsionARPolicy(
-            num_residues=num_residues,
-            residue_vocab_size=residue_vocab_size,
-            d_model=d_model,
-            nhead=n_heads,
-            num_layers=n_layers,
-            dropout=0.1,
-            kmix=kmix,
-            n_global_tokens=n_global_tokens,
-        ).to(torch_device)
-        agent_old.load_state_dict(payload["state_dict"], strict=True)
-        agent_old.eval()
-        log_print(f"[TorsionAR] Loaded pretrained policy from {torsion_ckpt}")
-    else:
-        num_residues = env_ref.n_residues
-        residue_vocab_size = int(residue_types_1d.max()) + 1
-        agent = TorsionARPolicy(num_residues=num_residues, residue_vocab_size=residue_vocab_size).to(torch_device)
-        agent_old = TorsionARPolicy(num_residues=num_residues, residue_vocab_size=residue_vocab_size).to(torch_device)
-        agent_old.load_state_dict(agent.state_dict())
-        agent_old.eval()
-        global_token_names = []
-        log_print("[TorsionAR] Initialized new policy (no pretrained checkpoint provided)")
+def _run_training_loop(args: argparse.Namespace) -> None:
+    (
+        config,
+        torch_device,
+        gen_device,
+        envs,
+        env_ref,
+        residue_types_1d,
+        residue_types_batch,
+        angle_mask_batch,
+        agent,
+        agent_old,
+        ar_cfg,
+        global_token_names,
+        torsion_ckpt,
+    ) = setup_training(args)
 
     policy_opts = [torch.optim.Adam(agent.parameters(), lr=config.lr)]
     optimizer = GRPOOptimizer(config, agent, agent_old, policy_opts)
@@ -246,32 +111,27 @@ def train(args: argparse.Namespace) -> None:
 
     # Checkpointing & History
     ckpt_manager = CheckpointManager(config)
-    all_epoch_data: List[List[Any]] = []
-    all_trajectory_lengths: List[List[int]] = []
-    all_epoch_traj_dcd_paths: List[List[Optional[str]]] = []
-    # Optional: for epochs/trajectories backed by a DCD on disk, store the
-    # original frame indices used for each imported frame (e.g., after applying
-    # history_dcd_stride or RMSD filtering). For trajectories produced by the
-    # current run, this is typically None (implies 0..L-1).
-    all_epoch_traj_dcd_frame_indices: List[List[Optional[np.ndarray]]] = []
-    ep_start = 0
+    (
+        all_epoch_data,
+        all_trajectory_lengths,
+        all_epoch_traj_dcd_paths,
+        all_epoch_traj_dcd_frame_indices,
+        ep_start,
+    ) = init_history_buffers()
     pca_state = None
 
     # Retrieval cache for torsion-query replay starts.
-    retrieval_hist_cv: List[np.ndarray] = []
-    retrieval_hist_coords: List[np.ndarray] = []
-    # Metadata for replay frames backed by on-disk trajectories.
-    retrieval_hist_dcd_paths: List[Optional[str]] = []
-    # Frame index in the source DCD (0-based); separate from `retrieval_hist_frame_idx`,
-    # which is used for embedding/label mapping and is typically a dense 0..L-1 index.
-    retrieval_hist_dcd_frame_idx: List[int] = []
-    # Per-frame global metrics aligned with retrieval_hist_cv/coords (shape [G]):
-    # typically matches the TorsionARPolicy global-token ordering.
-    retrieval_hist_globals: List[np.ndarray] = []
-    retrieval_hist_keys: List[str] = []
-    retrieval_hist_frame_idx: List[int] = []
-    retrieval_hist_labels: Optional[np.ndarray] = None
-    retrieval_rng = np.random.default_rng(0)
+    (
+        retrieval_hist_cv,
+        retrieval_hist_coords,
+        retrieval_hist_dcd_paths,
+        retrieval_hist_dcd_frame_idx,
+        retrieval_hist_globals,
+        retrieval_hist_keys,
+        retrieval_hist_frame_idx,
+        retrieval_hist_labels,
+        retrieval_rng,
+    ) = init_retrieval_history()
 
     global_dim = int(getattr(agent_old, "n_global_tokens", 0) or 0)
     if global_dim > 0 and (not global_token_names or len(global_token_names) != global_dim):
@@ -375,21 +235,20 @@ def train(args: argparse.Namespace) -> None:
 
     # Global (history-aware) LOO-VAMP sufficient statistics so trajectory rewards reflect
     # the marginal improvement to VAMP-2 over the accumulated dataset.
-    loo_vamp_stats: Optional[SufficientStatistics] = None
-    loo_vamp_stats_keys: set[str] = set()
-    loo_vamp_stats_signature: Optional[Tuple[int, int]] = None  # (n_states, lag_embed)
-
-    # Optional 2D bin-count statistics in the first two VAMP coordinates.
-    # Used as an exploration bonus in the generative loop.
-    vamp_bin_mu: Optional[np.ndarray] = None  # shape (2,)
-    vamp_bin_std: Optional[np.ndarray] = None  # shape (2,)
-    vamp_bin_counts: Optional[np.ndarray] = None  # shape (bins, bins)
-    vamp_bin_total: int = 0
-    vamp_bin_counted_keys: set[str] = set()
-    vamp_bin_signature: Optional[Tuple[int, float, int, int]] = None  # (bins, clip, max_samples, n_states)
-    vamp_bin_norm_ema_m1: Optional[float] = None
-    vamp_bin_norm_ema_m2: Optional[float] = None
-    vamp_bin_norm_ema_scale: Optional[float] = None
+    (
+        loo_vamp_stats,
+        loo_vamp_stats_keys,
+        loo_vamp_stats_signature,
+        vamp_bin_mu,
+        vamp_bin_std,
+        vamp_bin_counts,
+        vamp_bin_total,
+        vamp_bin_counted_keys,
+        vamp_bin_signature,
+        vamp_bin_norm_ema_m1,
+        vamp_bin_norm_ema_m2,
+        vamp_bin_norm_ema_scale,
+    ) = init_vamp_stats_state()
 
     def _invalidate_loo_vamp_stats(tag: str) -> None:
         nonlocal loo_vamp_stats, loo_vamp_stats_keys, loo_vamp_stats_signature

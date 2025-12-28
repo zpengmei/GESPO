@@ -91,18 +91,14 @@ class GRPOOptimizer:
                 extra_stats['adv_h_mean'] = 0.0
                 extra_stats['adv_h_std'] = 0.0
 
-        # Experimental: in discrete-state least-count mode (or uniform), we
-        # bypass the start policy entirely and should not attempt to
-        # compute or update categorical start log-probs.
+        # In discrete-state mode, we may bypass the start policy entirely
+        # and should not attempt to compute or update categorical start log-probs.
         if mode == 'torsion_ar':
             # Always enable start updates for torsion AR mode; masking is
             # handled via s_mask rather than disabling the head entirely.
             disable_start = False
         else:
-            disable_start = (s_actions is None) or bool(
-                getattr(self.config, "discrete_state_starts", False)
-                and (getattr(self.config, "least_count_starts", False) or getattr(self.config, "uniform_starts", False))
-            )
+            disable_start = (s_actions is None) or bool(getattr(self.config, "discrete_state_starts", False))
 
         # Pre-compute Old Log Probs (no grad)
         with torch.no_grad():
@@ -160,13 +156,13 @@ class GRPOOptimizer:
         for _ in range(self.config.grpo_iters):
             # Start with a scalar loss and let the first policy term
             # promote it to a tensor with gradient history. If no term
-            # is ever added (e.g., least-count starts with no hill
+            # is ever added (e.g., discrete-state starts with no hill
             # policy active), we skip backward entirely.
             loss: Any = 0.0
             
             # --- Start Policy Update ---
             if disable_start:
-                # No start update (e.g., least-count or uniform discrete starts)
+                # No start update (e.g., discrete-state starts)
                 device = None
                 if isinstance(s_rewards, torch.Tensor):
                     device = s_rewards.device
@@ -345,7 +341,7 @@ class GRPOOptimizer:
                 # Add to total entropy: if we already logged start-policy
                 # entropy this iteration, accumulate into it; otherwise,
                 # create a new entry for hill-only entropy (e.g. when
-                # least_count_starts disables the start head).
+                # discrete-state starts disables the start head).
                 if stats['entropy']:
                     stats['entropy'][-1] += ent_h_mean.item()
                 else:
@@ -355,7 +351,7 @@ class GRPOOptimizer:
             for opt in self.optimizers:
                 opt.zero_grad()
             # If loss is still a Python float, no head contributed a
-            # differentiable term this iteration (e.g., least-count
+            # differentiable term this iteration (e.g., discrete-state
             # starts with no hill policy); in that case, skip the
             # backward/step to avoid spurious autograd errors.
             if not isinstance(loss, float):

@@ -131,28 +131,17 @@ class RLConfig:
 
 @dataclass
 class PolicyConfig:
-    policy_type: str = "mlp"
     use_muon: bool = False
-    old_init: str = "copy"
-    old_perturb_scale: float = 1e-3
     num_mixtures: int = 3
-    use_bias: bool = False
     policy_conditioning_mode: str = "hybrid"
     discrete_state_starts: bool = False
     use_boundary_replay: bool = True
-    reset_policy_on_projector_refresh: bool = True
-    least_count_starts: bool = False
-    uniform_starts: bool = False
 
     @classmethod
     def populate_parser(cls, parser: argparse.ArgumentParser) -> None:
         g_policy = parser.add_argument_group("Policy Architecture")
-        g_policy.add_argument("--policy-type", default="mlp", choices=["mlp", "residual"], help="Policy architecture.")
         g_policy.add_argument("--use-muon", action="store_true", help="Use Muon optimizer for 2D parameters.")
-        g_policy.add_argument("--old-init", default="copy", choices=["copy", "perturb", "normal", "random"], help="Initialization for old policy.")
-        g_policy.add_argument("--old-perturb-scale", type=float, default=1e-3, help="Perturbation scale if old-init is 'perturb'.")
         g_policy.add_argument("--num-mixtures", type=int, default=3, help="Number of Gaussian mixtures.")
-        g_policy.add_argument("--use-bias", action="store_true", help="Enable learnable bias (hill) output.")
         g_policy.add_argument(
             "--policy-conditioning-mode",
             default="hybrid",
@@ -172,36 +161,6 @@ class PolicyConfig:
             help="Disable categorical starts; use continuous CV start policy.",
         )
         g_policy.add_argument(
-            "--least-count-starts",
-            dest="least_count_starts",
-            action="store_true",
-            help="Experimental: always launch all walkers from the current least-populated hard state (RL start policy disabled).",
-        )
-        g_policy.add_argument(
-            "--no-least-count-starts",
-            dest="least_count_starts",
-            action="store_false",
-            help="Use the configured start policy (RL or continuous) instead of forcing least-count launches.",
-        )
-        g_policy.add_argument(
-            "--uniform-starts",
-            dest="uniform_starts",
-            action="store_true",
-            help="Experimental: force uniform probability distribution over all hard states for starts.",
-        )
-        g_policy.add_argument(
-            "--reset-policy-on-projector-refresh",
-            dest="reset_policy_on_projector_refresh",
-            action="store_true",
-            help="Reinitialize the start policy after each projector refresh to avoid learning on drifting state labels (default).",
-        )
-        g_policy.add_argument(
-            "--no-reset-policy-on-projector-refresh",
-            dest="reset_policy_on_projector_refresh",
-            action="store_false",
-            help="Keep the start policy parameters across projector refreshes.",
-        )
-        g_policy.add_argument(
             "--random-replay",
             dest="use_boundary_replay",
             action="store_false",
@@ -215,10 +174,7 @@ class PolicyConfig:
         )
         parser.set_defaults(
             discrete_state_starts=False,
-            least_count_starts=False,
-            uniform_starts=False,
             use_boundary_replay=False,
-            reset_policy_on_projector_refresh=True,
         )
 
 
@@ -786,18 +742,11 @@ class TrainingConfig:
         "vamp_bin_norm_ema_beta": ("rl", "vamp_bin_norm_ema_beta"),
         "grad_clip": ("rl", "grad_clip"),
         "loss_prec": ("rl", "loss_prec"),
-        "policy_type": ("policy", "policy_type"),
         "use_muon": ("policy", "use_muon"),
-        "old_init": ("policy", "old_init"),
-        "old_perturb_scale": ("policy", "old_perturb_scale"),
         "num_mixtures": ("policy", "num_mixtures"),
-        "use_bias": ("policy", "use_bias"),
         "policy_conditioning_mode": ("policy", "policy_conditioning_mode"),
         "discrete_state_starts": ("policy", "discrete_state_starts"),
         "use_boundary_replay": ("policy", "use_boundary_replay"),
-        "reset_policy_on_projector_refresh": ("policy", "reset_policy_on_projector_refresh"),
-        "least_count_starts": ("policy", "least_count_starts"),
-        "uniform_starts": ("policy", "uniform_starts"),
         "record_stride": ("sampling", "record_stride"),
         "sigma_min": ("sampling", "sigma_min"),
         "retrieval_candidates": ("sampling", "retrieval_candidates"),
@@ -988,18 +937,11 @@ class TrainingConfig:
                 vamp_bin_norm_ema_beta=float(get("vamp_bin_norm_ema_beta", 0.9) or 0.9),
             ),
             policy=PolicyConfig(
-                policy_type=get("policy_type", "mlp"),
                 use_muon=get("use_muon", False),
-                old_init=get("old_init", "copy"),
-                old_perturb_scale=get("old_perturb_scale", 1e-3),
                 num_mixtures=get("num_mixtures", 3),
-                use_bias=get("use_bias", False),
                 policy_conditioning_mode=get("policy_conditioning_mode", "hybrid"),
                 discrete_state_starts=get("discrete_state_starts", False),
                 use_boundary_replay=get("use_boundary_replay", True),
-                reset_policy_on_projector_refresh=get("reset_policy_on_projector_refresh", True),
-                least_count_starts=get("least_count_starts", False),
-                uniform_starts=get("uniform_starts", False),
             ),
             sampling=SamplingConfig(
                 record_stride=max(1, get("record_stride", 10)),

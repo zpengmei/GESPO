@@ -327,7 +327,7 @@ def refresh_geom2vec_vamp(
             except Exception:
                 continue
 
-    if getattr(config, "reset_policy_on_projector_refresh", False) and policy_reset is not None:
+    if policy_reset is not None:
         try:
             if isinstance(policy_reset.agent, StateLogitPolicy) and isinstance(policy_reset.agent_old, StateLogitPolicy):
                 with torch.no_grad():
