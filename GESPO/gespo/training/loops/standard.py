@@ -29,6 +29,8 @@ from ...sampling import PeptideSampler
 from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
 from ...utils.geometry import _dihedral
+
+# Local imports
 from ..core.setup import initialize_policy, initialize_projection_scorer
 from .anchoring import run_anchoring_round
 from .geom2vec_refresh import PolicyResetHandles, refresh_geom2vec_vamp

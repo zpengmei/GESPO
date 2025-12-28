@@ -34,6 +34,8 @@ from ...utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices
 from ...utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
 from ...utils.openmm_utils import resolve_device
 from ...utils.plotting import plot_analysis_summary, plot_ramachandran_by_residue
+
+# Local imports
 from ..core.checkpointing import CheckpointManager
 from ..core.features import FeatureBuilder
 from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache

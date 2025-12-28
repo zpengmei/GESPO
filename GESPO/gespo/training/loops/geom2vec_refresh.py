@@ -12,6 +12,7 @@ import torch
 
 from gespo.utils.logging import log_print
 
+# Local imports
 from ..geom2vec.utils import align_states_by_overlap
 from ..policies.rl import StateLogitPolicy
 from ..geom2vec_backbone import EmbeddingCache, Geom2VecVAMPProjector
