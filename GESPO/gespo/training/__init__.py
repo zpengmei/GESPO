@@ -16,12 +16,12 @@ def train(args):
     runs the torsion-autoregressive generative loop.
     """
     if getattr(args, "generative_loop", False):
-        from . import loop_generative as _loop_generative
+        from .loops import generative as _loop_generative
 
         _loop_generative.train(args)
         return
 
-    from . import loop as _loop_standard
+    from .loops import standard as _loop_standard
 
     _loop_standard.train(args)
 
