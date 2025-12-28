@@ -294,10 +294,7 @@ def train(args: argparse.Namespace) -> None:
         n_layers = int(ar_cfg.get("n_layers", 4))
         kmix = int(ar_cfg.get("kmix", 8))
         n_global_tokens = int(ar_cfg.get("n_global_tokens", 0) or 0)
-        try:
-            names_cfg = ar_cfg.get("global_token_names", None)
-        except Exception:
-            names_cfg = None
+        names_cfg = ar_cfg.get("global_token_names")
         if isinstance(names_cfg, (list, tuple)) and len(names_cfg) == n_global_tokens:
             global_token_names = [str(x) for x in names_cfg]
         else:
@@ -354,12 +351,7 @@ def train(args: argparse.Namespace) -> None:
             return
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        cfg = {}
-        try:
-            if torsion_ckpt:
-                cfg = dict(ar_cfg) if isinstance(ar_cfg, dict) else {}
-        except Exception:
-            cfg = {}
+        cfg = dict(ar_cfg) if torsion_ckpt and isinstance(ar_cfg, dict) else {}
         if not cfg:
             cfg = {
                 "num_residues": int(getattr(agent, "num_residues", env_ref.n_residues)),
@@ -370,11 +362,8 @@ def train(args: argparse.Namespace) -> None:
                 "kmix": int(getattr(agent, "kmix", 8)),
                 "n_global_tokens": int(getattr(agent, "n_global_tokens", 0) or 0),
             }
-        try:
-            if global_token_names:
-                cfg["global_token_names"] = list(global_token_names)
-        except Exception:
-            pass
+        if global_token_names:
+            cfg["global_token_names"] = list(global_token_names)
 
         agent_path = ckpt_dir / f"torsion_ar_ep_{ep_idx_1based:04d}.pt"
         agent_old_path = ckpt_dir / f"torsion_ar_old_ep_{ep_idx_1based:04d}.pt"
@@ -492,23 +481,20 @@ def train(args: argparse.Namespace) -> None:
             except Exception:
                 adk_vals = None
 
-        try:
-            adk_name_to_col = {name: i for i, name in enumerate(ADK_GLOBAL_TOKEN_NAMES)}
-            for j, name in enumerate(global_token_names):
-                key = str(name)
-                key_l = key.lower()
-                if key_l.startswith("rmsd"):
-                    if adk_vals is not None:
-                        out[:, j] = adk_vals[:, 0]
-                    elif rmsd_nm is not None:
-                        out[:, j] = rmsd_nm
-                elif key_l.startswith("e2e"):
-                    if e2e_nm is not None:
-                        out[:, j] = e2e_nm
-                elif adk_vals is not None and key in adk_name_to_col:
-                    out[:, j] = adk_vals[:, adk_name_to_col[key]]
-        except Exception:
-            pass
+        adk_name_to_col = {name: i for i, name in enumerate(ADK_GLOBAL_TOKEN_NAMES)}
+        for j, name in enumerate(global_token_names):
+            key = str(name)
+            key_l = key.lower()
+            if key_l.startswith("rmsd"):
+                if adk_vals is not None:
+                    out[:, j] = adk_vals[:, 0]
+                elif rmsd_nm is not None:
+                    out[:, j] = rmsd_nm
+            elif key_l.startswith("e2e"):
+                if e2e_nm is not None:
+                    out[:, j] = e2e_nm
+            elif adk_vals is not None and key in adk_name_to_col:
+                out[:, j] = adk_vals[:, adk_name_to_col[key]]
 
         out = np.where(np.isfinite(out), out, 0.0).astype(np.float32, copy=False)
         out = np.clip(out, 0.0, None)
