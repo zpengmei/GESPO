@@ -8,6 +8,7 @@ Legacy loops (in _legacy/):
 - discrete: Original discrete-state loop with ensemble uncertainty
 - toy_phi_psi: Toy phi/psi start distribution loops
 """
+from .base import BaseTrainingLoop
 
 
 def train(args):
