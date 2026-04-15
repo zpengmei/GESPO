@@ -2311,280 +2311,46 @@ def train(args: argparse.Namespace) -> None:
                 launch_rewards = launch_rewards.to(torch_device)
                 reward_tensors["launch"] = launch_rewards
 
-            loo_weight = float(getattr(config, "loo_vamp_reward_weight", 1.0) or 1.0)
-            start_cluster_ent_coef = float(getattr(config, "start_cluster_entropy_coef", -1.0) or -1.0)
-            if start_cluster_ent_coef < 0:
-                start_cluster_ent_coef = float(getattr(config, "ent_coef", 0.0) or 0.0)
-            vamp_bin_ent_coef = float(getattr(config, "vamp_bin_entropy_coef", -1.0) or -1.0)
-            if vamp_bin_ent_coef < 0:
-                vamp_bin_ent_coef = float(getattr(config, "ent_coef", 0.0) or 0.0)
+            # ── Combine rewards via RewardCombiner ──────────────────
+            from gespo.rewards.combiner import RewardCombiner, RewardTerms
 
+            if not hasattr(train, "_reward_combiner"):
+                train._reward_combiner = RewardCombiner(config, torch_device)
+            _rc = train._reward_combiner
+
+            _raw_terms = RewardTerms(
+                loo_vamp=loo_vamp_rewards,
+                start_cluster=start_cluster_bonus if start_cluster_bonus is not None else None,
+                vamp_bin=vamp_bin_bonus if vamp_bin_bonus is not None else None,
+                msm_ig=msm_ig_rewards if msm_ig_rewards is not None else None,
+                off_action_mae=(
+                    np.asarray(metrics.get("reset_cv_mae", [0.0] * config.grp_size), dtype=np.float32)
+                    if float(getattr(config, "off_action_penalty_coef", 0.0) or 0.0) > 0 else None
+                ),
+            )
+
+            active_mask = metrics.get(
+                "active_mask",
+                torch.ones(config.grp_size, dtype=torch.bool, device=torch_device),
+            )
+            if torch.is_tensor(active_mask) and active_mask.device != torch_device:
+                active_mask = active_mask.to(torch_device)
+
+            combined_rewards, reward_metrics = _rc.combine(
+                _raw_terms, launch_rewards, active_mask,
+            )
+            metrics.update(reward_metrics)
+
+            # Backward-compat term tensors for diagnostics logging
+            loo_weight = _rc.loo_weight
             term_loo_vamp = torch.zeros_like(launch_rewards)
             term_start_cluster = torch.zeros_like(launch_rewards)
             term_vamp_bin = torch.zeros_like(launch_rewards)
             term_msm_ig = torch.zeros_like(launch_rewards)
             term_off_action = torch.zeros_like(launch_rewards)
             off_action_discount = torch.ones_like(launch_rewards)
-
-            if loo_vamp_rewards is not None and np.any(np.abs(loo_vamp_rewards) > 1e-8):
-                loo_vamp_tensor = torch.tensor(loo_vamp_rewards, device=torch_device, dtype=torch.float32)
-                term_loo_vamp = loo_weight * loo_vamp_tensor
-                combined_rewards = term_loo_vamp
-                print(f"[Rewards] Using LOO VAMP only (weight={loo_weight:.2f}): loo_mean={loo_vamp_tensor.mean():.4f}")
-            else:
-                combined_rewards = torch.zeros_like(launch_rewards)
-
-            if start_cluster_ent_coef > 0 and start_cluster_bonus is not None:
-                bonus_tensor = torch.as_tensor(start_cluster_bonus, device=torch_device, dtype=torch.float32)
-                term_start_cluster = start_cluster_ent_coef * bonus_tensor
-                combined_rewards = combined_rewards + term_start_cluster
-                try:
-                    h_val = float(start_cluster_entropy) if start_cluster_entropy is not None else float("nan")
-                    print(
-                        f"[Rewards] Added start-cluster entropy bonus: coef={start_cluster_ent_coef:.2e}, "
-                        f"H={h_val:.3f}, bonus_mean={bonus_tensor.mean().item():.4f}"
-                    )
-                except Exception:
-                    print(f"[Rewards] Added start-cluster entropy bonus (coef={start_cluster_ent_coef:.2e}).")
-
-            if vamp_bin_ent_coef > 0 and vamp_bin_bonus is not None:
-                bonus_raw = np.asarray(vamp_bin_bonus, dtype=np.float32)
-                bonus_raw_mean = float(np.mean(bonus_raw))
-                bonus_raw_std = float(np.std(bonus_raw))
-                try:
-                    metrics["avg_vamp_bin_bonus_raw"] = bonus_raw_mean
-                    metrics["std_vamp_bin_bonus_raw"] = bonus_raw_std
-                except Exception:
-                    pass
-
-                # Normalize the bin bonus to be comparable in scale to LOO-VAMP rewards.
-                eps = 1e-8
-                ema_beta = float(getattr(config, "vamp_bin_norm_ema_beta", 0.9) or 0.9)
-                ema_beta = max(0.0, min(1.0, ema_beta))
-                use_ema = ema_beta > 0.0
-
-                cur_m1 = bonus_raw_mean
-                cur_m2 = float(np.mean(bonus_raw * bonus_raw))
-                if not np.isfinite(cur_m2):
-                    cur_m2 = float(cur_m1 * cur_m1 + bonus_raw_std * bonus_raw_std)
-
-                if use_ema:
-                    if vamp_bin_mgr.norm_ema_m1 is None or vamp_bin_mgr.norm_ema_m2 is None:
-                        vamp_bin_mgr.norm_ema_m1 = float(cur_m1)
-                        vamp_bin_mgr.norm_ema_m2 = float(cur_m2)
-                    else:
-                        vamp_bin_mgr.norm_ema_m1 = float(ema_beta) * float(vamp_bin_mgr.norm_ema_m1) + float(1.0 - ema_beta) * float(cur_m1)
-                        vamp_bin_mgr.norm_ema_m2 = float(ema_beta) * float(vamp_bin_mgr.norm_ema_m2) + float(1.0 - ema_beta) * float(cur_m2)
-
-                    mean_use = float(vamp_bin_mgr.norm_ema_m1)
-                    var_use = float(max(float(vamp_bin_mgr.norm_ema_m2) - mean_use * mean_use, 0.0))
-                    std_use = float(np.sqrt(var_use))
-                else:
-                    mean_use = float(cur_m1)
-                    std_use = float(bonus_raw_std)
-
-                if np.isfinite(std_use) and std_use > eps:
-                    bonus_z = (bonus_raw - mean_use) / std_use
-                else:
-                    bonus_z = bonus_raw * 0.0
-
-                loo_std = 0.0
-                try:
-                    loo_std = float(np.std(np.asarray(loo_vamp_rewards, dtype=np.float32)))
-                except Exception:
-                    loo_std = 0.0
-
-                target_scale_cur = float(loo_weight) * loo_std if (np.isfinite(loo_std) and loo_std > eps) else 1.0
-                if use_ema:
-                    if vamp_bin_mgr.norm_ema_scale is None:
-                        vamp_bin_mgr.norm_ema_scale = float(target_scale_cur)
-                    else:
-                        vamp_bin_mgr.norm_ema_scale = float(ema_beta) * float(vamp_bin_mgr.norm_ema_scale) + float(1.0 - ema_beta) * float(target_scale_cur)
-                    target_scale = float(vamp_bin_mgr.norm_ema_scale)
-                else:
-                    target_scale = float(target_scale_cur)
-
-                bonus_norm = bonus_z * float(target_scale)
-
-                bonus_tensor = torch.as_tensor(bonus_norm, device=torch_device, dtype=torch.float32)
-                term_vamp_bin = vamp_bin_ent_coef * bonus_tensor
-                combined_rewards = combined_rewards + term_vamp_bin
-                try:
-                    metrics["avg_vamp_bin_bonus"] = float(bonus_tensor.mean().item())
-                    metrics["std_vamp_bin_bonus"] = float(bonus_tensor.std(unbiased=False).item())
-                    metrics["avg_vamp_bin_bonus_norm_mean"] = float(mean_use)
-                    metrics["avg_vamp_bin_bonus_norm_std"] = float(std_use)
-                    metrics["avg_vamp_bin_bonus_norm_scale"] = float(target_scale)
-                except Exception:
-                    pass
-                try:
-                    print(
-                        f"[Rewards] Added VAMP-bin bonus: coef={vamp_bin_ent_coef:.2e}, "
-                        f"raw_mean={bonus_raw_mean:.4f} raw_std={bonus_raw_std:.4f} "
-                        f"ema_beta={ema_beta:.2f} norm_std={std_use:.4f} "
-                        f"scale={target_scale:.3e} norm_mean={bonus_tensor.mean().item():+.4f}"
-                    )
-                except Exception:
-                    print(f"[Rewards] Added VAMP-bin bonus (coef={vamp_bin_ent_coef:.2e}).")
-
-            msm_ig_coef = float(getattr(config, "msm_ig_reward_coef", 0.0) or 0.0)
-            if msm_ig_coef > 0.0 and msm_ig_rewards is not None:
-                active_mask = metrics.get(
-                    "active_mask",
-                    torch.ones(config.grp_size, dtype=torch.bool, device=torch_device),
-                )
-                if torch.is_tensor(active_mask) and active_mask.device != torch_device:
-                    active_mask = active_mask.to(torch_device)
-                if torch.is_tensor(active_mask) and active_mask.dtype != torch.bool:
-                    active_mask = active_mask.bool()
-
-                try:
-                    active_cpu = (
-                        active_mask.detach().cpu().numpy().astype(bool)
-                        if torch.is_tensor(active_mask)
-                        else np.ones((config.grp_size,), dtype=bool)
-                    )
-                except Exception:
-                    active_cpu = np.ones((config.grp_size,), dtype=bool)
-
-                try:
-                    msm_raw = np.asarray(msm_ig_rewards, dtype=np.float32)
-                    msm_raw = np.where(np.isfinite(msm_raw), msm_raw, 0.0).astype(np.float32, copy=False)
-                except Exception:
-                    msm_raw = np.zeros((config.grp_size,), dtype=np.float32)
-
-                msm_raw_active = msm_raw[active_cpu] if msm_raw.size == int(config.grp_size) else msm_raw
-                msm_raw_mean = float(np.mean(msm_raw_active)) if msm_raw_active.size else 0.0
-                msm_raw_std = float(np.std(msm_raw_active)) if msm_raw_active.size else 0.0
-
-                # Normalize MSM-IG to match the typical LOO-VAMP scale (like the VAMP-bin bonus).
-                eps = 1e-8
-                ema_beta = float(getattr(config, "msm_ig_norm_ema_beta", 0.9) or 0.9)
-                ema_beta = max(0.0, min(1.0, ema_beta))
-                use_ema = ema_beta > 0.0
-
-                cur_m1 = float(msm_raw_mean)
-                try:
-                    cur_m2 = float(np.mean(msm_raw_active.astype(np.float64) ** 2)) if msm_raw_active.size else 0.0
-                except Exception:
-                    cur_m2 = float(cur_m1 * cur_m1 + msm_raw_std * msm_raw_std)
-
-                if use_ema:
-                    if msm_ig_mgr.norm_ema_m1 is None or msm_ig_mgr.norm_ema_m2 is None:
-                        msm_ig_mgr.norm_ema_m1 = float(cur_m1)
-                        msm_ig_mgr.norm_ema_m2 = float(cur_m2)
-                    else:
-                        msm_ig_mgr.norm_ema_m1 = float(ema_beta) * float(msm_ig_mgr.norm_ema_m1) + float(1.0 - ema_beta) * float(cur_m1)
-                        msm_ig_mgr.norm_ema_m2 = float(ema_beta) * float(msm_ig_mgr.norm_ema_m2) + float(1.0 - ema_beta) * float(cur_m2)
-
-                    mean_use = float(msm_ig_mgr.norm_ema_m1)
-                    var_use = float(max(float(msm_ig_mgr.norm_ema_m2) - mean_use * mean_use, 0.0))
-                    std_use = float(np.sqrt(var_use))
-                else:
-                    mean_use = float(cur_m1)
-                    std_use = float(msm_raw_std)
-
-                if np.isfinite(std_use) and std_use > eps:
-                    msm_z = (msm_raw - float(mean_use)) / float(std_use)
-                else:
-                    msm_z = msm_raw * 0.0
-
-                loo_std = 0.0
-                try:
-                    loo_std = float(np.std(np.asarray(loo_vamp_rewards, dtype=np.float32)))
-                except Exception:
-                    loo_std = 0.0
-
-                target_scale_cur = float(loo_weight) * loo_std if (np.isfinite(loo_std) and loo_std > eps) else 0.0
-                if not (np.isfinite(target_scale_cur) and target_scale_cur > eps):
-                    try:
-                        cur_std = float(combined_rewards[active_mask].std(unbiased=False).item())
-                        if np.isfinite(cur_std) and cur_std > eps:
-                            target_scale_cur = cur_std
-                    except Exception:
-                        pass
-                if not (np.isfinite(target_scale_cur) and target_scale_cur > eps):
-                    target_scale_cur = 1.0
-                if use_ema:
-                    if msm_ig_mgr.norm_ema_scale is None:
-                        msm_ig_mgr.norm_ema_scale = float(target_scale_cur)
-                    else:
-                        msm_ig_mgr.norm_ema_scale = float(ema_beta) * float(msm_ig_mgr.norm_ema_scale) + float(1.0 - ema_beta) * float(target_scale_cur)
-                    target_scale = float(msm_ig_mgr.norm_ema_scale)
-                else:
-                    target_scale = float(target_scale_cur)
-
-                msm_norm = msm_z * float(target_scale)
-                try:
-                    msm_tensor = torch.as_tensor(msm_norm, device=torch_device, dtype=torch.float32)
-                except Exception:
-                    msm_tensor = torch.zeros_like(launch_rewards)
-
-                term_msm_ig = msm_ig_coef * msm_tensor
-                term_msm_ig = torch.where(active_mask, term_msm_ig, torch.zeros_like(term_msm_ig))
-                combined_rewards = combined_rewards + term_msm_ig
-
-                try:
-                    metrics["avg_msm_ig_raw"] = float(msm_raw_mean)
-                    metrics["std_msm_ig_raw"] = float(msm_raw_std)
-                    metrics["avg_msm_ig_norm_mean"] = float(mean_use)
-                    metrics["avg_msm_ig_norm_std"] = float(std_use)
-                    metrics["avg_msm_ig_norm_scale"] = float(target_scale)
-                    term_active = term_msm_ig[active_mask]
-                    metrics["avg_msm_ig"] = float(term_active.mean().item()) if term_active.numel() else 0.0
-                    if msm_ig_unique_states is not None:
-                        uniq = np.asarray(msm_ig_unique_states, dtype=np.float32)
-                        uniq = np.where(np.isfinite(uniq), uniq, 0.0)
-                        metrics["avg_msm_ig_unique_states"] = float(np.mean(uniq))
-                    print(
-                        f"[Rewards] Added MSM-IG reward: coef={msm_ig_coef:.2e}, "
-                        f"raw_mean={metrics['avg_msm_ig_raw']:.4f} raw_std={metrics['std_msm_ig_raw']:.4f} "
-                        f"ema_beta={ema_beta:.2f} norm_std={std_use:.4f} "
-                        f"scale={target_scale:.3e} norm_mean={msm_tensor.mean().item():+.4f}"
-                    )
-                except Exception:
-                    print(f"[Rewards] Added MSM-IG reward (coef={msm_ig_coef:.2e}).")
-
-            # Optional off-action discount: downweight rewards for starts whose
-            # requested torsion/CV targets cannot be realized by reset/steering.
-            off_coef = float(getattr(config, "off_action_penalty_coef", 0.0) or 0.0)
-            if off_coef > 0.0:
-                reset_mae = metrics.get("reset_cv_mae", [float("nan")] * config.grp_size)
-                try:
-                    reset_mae_t = torch.as_tensor(reset_mae, device=torch_device, dtype=torch.float32)
-                    reset_mae_t = torch.nan_to_num(reset_mae_t, nan=0.0, posinf=0.0, neginf=0.0)
-                    reset_mae_t = torch.clamp(reset_mae_t, min=0.0)
-                except Exception:
-                    reset_mae_t = torch.zeros_like(launch_rewards)
-
-                active_mask = metrics.get(
-                    "active_mask",
-                    torch.ones(config.grp_size, dtype=torch.bool, device=torch_device),
-                )
-                if torch.is_tensor(active_mask) and active_mask.device != torch_device:
-                    active_mask = active_mask.to(torch_device)
-                if torch.is_tensor(active_mask) and active_mask.dtype != torch.bool:
-                    active_mask = active_mask.bool()
-
-                reward_before = combined_rewards
-                discount = torch.exp((-off_coef) * reset_mae_t)
-                discount = torch.clamp(discount, min=0.0, max=1.0)
-                discount = torch.where(active_mask, discount, torch.ones_like(discount))
-                off_action_discount = discount
-                combined_rewards = combined_rewards * off_action_discount
-                term_off_action = combined_rewards - reward_before
-                try:
-                    mae_active = reset_mae_t[active_mask]
-                    disc_active = off_action_discount[active_mask]
-                    metrics["avg_reset_cv_mae"] = float(mae_active.mean().item()) if mae_active.numel() else 0.0
-                    metrics["avg_off_action_discount"] = float(disc_active.mean().item()) if disc_active.numel() else 1.0
-                    print(
-                        f"[Rewards] Off-action discount (coef={off_coef:.2e}): "
-                        f"reset_mae_mean={metrics['avg_reset_cv_mae']:.4f} rad, "
-                        f"discount_mean={metrics['avg_off_action_discount']:.4f}"
-                    )
-                except Exception:
-                    print(f"[Rewards] Off-action discount enabled (coef={off_coef:.2e}).")
+            if loo_vamp_rewards is not None:
+                term_loo_vamp = loo_weight * torch.tensor(loo_vamp_rewards, device=torch_device, dtype=torch.float32)
 
             reward_tensors["launch"] = combined_rewards
             try:

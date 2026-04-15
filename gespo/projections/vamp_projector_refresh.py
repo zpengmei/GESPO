@@ -21,16 +21,16 @@ import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 
-from ...config import TrainingConfig
-from ..geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector
-from ..geom2vec_backbone.vamp_trainer import train_vamp_lobe_from_cache
-from ..dga_committor import (
+from gespo.config import TrainingConfig
+from gespo.projections.geom2vec import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector
+from gespo.projections.geom2vec.vamp_trainer import train_vamp_lobe_from_cache
+from gespo.training.dga_committor import (
     DGAKMeansCommittorModel,
     VampDiscreteCommittorModel,
     fit_dga_committor_kmeans,
     fit_vamp_discrete_committor,
 )
-from .geom2vec_manager import align_states_by_overlap
+from gespo.training.components.geom2vec_manager import align_states_by_overlap
 
 
 def _refresh_vamp_projectors(

@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from .geom2vec_manager import Geom2VecManager, align_states_by_overlap
+from gespo.training.components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
 
 
 def _natural_sort_key(text: str) -> Tuple[Tuple[int, object], ...]:
