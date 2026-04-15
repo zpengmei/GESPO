@@ -338,24 +338,3 @@ def _run_anchoring_round(
 
     print("[Anchoring] Done.")
 
-# Optional anchoring to seed history
-_run_anchoring_round()
-
-# Build/refresh the in-memory retrieval cache from *all* loaded history sources
-# (resume + external history DCDs + anchoring). This keeps replay starts stable
-# and ensures older history frames are not silently dropped by load order.
-if all_epoch_data:
-    try:
-        _rebuild_retrieval_cache_from_history(tag="pre-train")
-    except Exception as exc_rebuild:
-        print(f"[Retrieval Cache] Warning: failed to rebuild from history ({exc_rebuild})")
-
-# Warm-start projector immediately after anchoring so LOO rewards are ready for epoch 1
-if all_epoch_data and not geom2vec_mgr.is_trained():
-    _refresh_geom2vec_vamp(reason="post-anchoring warm-start")
-
-# Plotting for "this round": exclude any bootstrapped history/anchoring epochs.
-round_epoch_data_start = len(all_epoch_data)
-
-print(f"Starting training from epoch {ep_start+1}...")
-
