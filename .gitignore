@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+*.egg
+
+# Data / model artifacts (large files)
+*.dcd
+*.xtc
+*.trr
+*.pt
+*.pth
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.ckpt
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+*.api_key
