@@ -1,21 +1,19 @@
-"""Components subpackage for training loop refactoring."""
+"""Components subpackage — lazy imports to avoid pulling in openmm at import time."""
 
-from .geom2vec_manager import Geom2VecManager
-from .loo_vamp_rewards import LOOVAMPRewards
-from .retrieval_manager import RetrievalManager
-from .state_manager import StateManager
-from .epoch_coordinator import EpochCoordinator
-from .sampling_orchestrator import SamplingOrchestrator
-from .policy_io import save_torsion_ar_policy
-from . import graph_algorithms
 
-__all__ = [
-    "Geom2VecManager",
-    "LOOVAMPRewards",
-    "RetrievalManager",
-    "StateManager",
-    "EpochCoordinator",
-    "SamplingOrchestrator",
-    "save_torsion_ar_policy",
-    "graph_algorithms",
-]
+def __getattr__(name: str):
+    _lazy = {
+        "GeomVecManager": ".geom2vec_manager",
+        "LOOVAMPRewards": ".loo_vamp_rewards",
+        "RetrievalManager": ".retrieval_manager",
+        "StateManager": ".state_manager",
+        "EpochCoordinator": ".epoch_coordinator",
+        "SamplingOrchestrator": ".sampling_orchestrator",
+        "save_torsion_ar_policy": ".policy_io",
+        "graph_algorithms": ".graph_algorithms",
+    }
+    if name in _lazy:
+        import importlib
+        mod = importlib.import_module(_lazy[name], __name__)
+        return getattr(mod, name, mod)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

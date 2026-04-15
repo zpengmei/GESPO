@@ -24,13 +24,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from ..config import TrainingConfig
-from ..sampling import PeptideSampler
-from ..utils.openmm_utils import resolve_device
-from ..utils.plotting import plot_ramachandran_by_residue
-from .optimization import GRPOOptimizer
-from .rl import VonMisesStartPolicy
-from .vamp_stats import SufficientStatistics
+from gespo.config import TrainingConfig
+from gespo.sampling import PeptideSampler
+from gespo.utils.openmm_utils import resolve_device
+from gespo.utils.plotting import plot_ramachandran_by_residue
+from gespo.training.optimization import GRPOOptimizer
+from gespo.training.rl import VonMisesStartPolicy
+from gespo.training.vamp_stats import SufficientStatistics
 
 try:
     from scipy.special import digamma, gammaln  # type: ignore

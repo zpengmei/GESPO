@@ -14,26 +14,26 @@ Key differences vs the standard discrete-start loop:
 from __future__ import annotations
 from dataclasses import dataclass
 
-from .components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
-from .components.retrieval_manager import RetrievalManager
-from .components.policy_io import save_torsion_ar_policy
-from .components.global_metrics import compute_globals_from_coords as _compute_globals_impl
-from .components.vamp_bin_bonus import VampBinBonus
-from .components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
-from .components.retrieval_labels import refresh_retrieval_cache_labels as _refresh_labels_impl
-from .components.msm_ig_bonus import MSMIGBonus
-from .components import graph_algorithms as _graph
-from .components.endpoint_loader import load_endpoint_ca_ref, load_boundary_plugin
-from .components.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
-from .components import committor_utils as _cu
-from .components.committor_state import CommittorState
-from .dga_committor import (
+from gespo.training.components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
+from gespo.training.components.retrieval_manager import RetrievalManager
+from gespo.training.components.policy_io import save_torsion_ar_policy
+from gespo.training.components.global_metrics import compute_globals_from_coords as _compute_globals_impl
+from gespo.training.components.vamp_bin_bonus import VampBinBonus
+from gespo.training.components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
+from gespo.training.components.retrieval_labels import refresh_retrieval_cache_labels as _refresh_labels_impl
+from gespo.training.components.msm_ig_bonus import MSMIGBonus
+from gespo.training.components import graph_algorithms as _graph
+from gespo.training.components.endpoint_loader import load_endpoint_ca_ref, load_boundary_plugin
+from gespo.training.components.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
+from gespo.training.components import committor_utils as _cu
+from gespo.training.components.committor_state import CommittorState
+from gespo.training.dga_committor import (
     DGAKMeansCommittorModel,
     VampDiscreteCommittorModel,
     fit_dga_committor_kmeans,
     fit_vamp_discrete_committor,
 )
-from .geom2vec_backbone.vamp_trainer import train_vamp_lobe_from_cache
+from gespo.training.geom2vec_backbone.vamp_trainer import train_vamp_lobe_from_cache
 
 import argparse
 import gc
@@ -68,23 +68,23 @@ from openmm.app import Modeller, Simulation
 from scipy.optimize import linear_sum_assignment
 from scipy.special import digamma, gammaln
 
-from ..config import TrainingConfig
-from ..sampling import PeptideSampler
-from ..utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_frames
-from ..utils.ppi_metrics import PPI_GLOBAL_TOKEN_NAMES, PPITokenIndices, build_ppi_token_indices, compute_ppi_globals_from_frames, set_native_contacts
-from ..utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
-from ..utils.openmm_utils import resolve_device
-from ..utils.plotting import plot_analysis_summary, plot_ramachandran_by_residue
-from ..utils.selection import infer_protein_atom_indices
-from .checkpointing import CheckpointManager
-from .features import FeatureBuilder
-from .geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
-from .geom2vec_backbone.inference import infer_geom2vec_embeddings
-from .optimization import GRPOOptimizer
-from .rl import StateLogitPolicy, TorsionARPolicy
-from .sampler import Sampler
-from .setup import initialize_policy
-from .torsion_retrieval import (
+from gespo.config import TrainingConfig
+from gespo.sampling import PeptideSampler
+from gespo.utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_frames
+from gespo.utils.ppi_metrics import PPI_GLOBAL_TOKEN_NAMES, PPITokenIndices, build_ppi_token_indices, compute_ppi_globals_from_frames, set_native_contacts
+from gespo.utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
+from gespo.utils.openmm_utils import resolve_device
+from gespo.utils.plotting import plot_analysis_summary, plot_ramachandran_by_residue
+from gespo.utils.selection import infer_protein_atom_indices
+from gespo.training.checkpointing import CheckpointManager
+from gespo.training.features import FeatureBuilder
+from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
+from gespo.training.geom2vec_backbone.inference import infer_geom2vec_embeddings
+from gespo.training.optimization import GRPOOptimizer
+from gespo.training.rl import StateLogitPolicy, TorsionARPolicy
+from gespo.training.sampler import Sampler
+from gespo.training.setup import initialize_policy
+from gespo.training.torsion_retrieval import (
     balanced_candidate_indices,
     build_residue_torsions_from_cv_and_coords,
     compute_support_threshold,
@@ -92,8 +92,8 @@ from .torsion_retrieval import (
     pairwise_sq_l2,
     sample_from_topk,
 )
-from .vamp_stats import SufficientStatistics as VAMPSufficientStatistics
-from .components.lobe_projector import (
+from gespo.training.vamp_stats import SufficientStatistics as VAMPSufficientStatistics
+from gespo.training.components.lobe_projector import (
     state_probs_from_output_np as _state_probs_from_output_np,
     TrainedLobe as _TrainedLobe,
     VampPairRecord as _VampPairRecord,

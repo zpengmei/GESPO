@@ -28,22 +28,22 @@ from openmm import unit
 from openmm.app import Modeller, Simulation
 from scipy.optimize import linear_sum_assignment
 
-from ..config import TrainingConfig
-from ..sampling import PeptideSampler
-from ..utils.openmm_utils import resolve_device
-from .setup import initialize_policy
-from .rl import StateLogitPolicy
-from .features import FeatureBuilder
-from .sampler import Sampler
-from .checkpointing import CheckpointManager
-from .optimization import GRPOOptimizer
+from gespo.config import TrainingConfig
+from gespo.sampling import PeptideSampler
+from gespo.utils.openmm_utils import resolve_device
+from gespo.training.setup import initialize_policy
+from gespo.training.rl import StateLogitPolicy
+from gespo.training.features import FeatureBuilder
+from gespo.training.sampler import Sampler
+from gespo.training.checkpointing import CheckpointManager
+from gespo.training.optimization import GRPOOptimizer
 
-from ..utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
-from ..utils.geometry import _dihedral, find_all_backbone_dihedrals, calculate_rmsd
-from .geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
+from gespo.utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
+from gespo.utils.geometry import _dihedral, find_all_backbone_dihedrals, calculate_rmsd
+from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
 
 
-from .vamp_stats import SufficientStatistics  # noqa: E402 — canonical LOO VAMP-2 stats
+from gespo.training.vamp_stats import SufficientStatistics  # noqa: E402 — canonical LOO VAMP-2 stats
 
 
 class EnsembleDeepTICA:
