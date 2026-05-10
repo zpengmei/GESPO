@@ -23,7 +23,6 @@ CLIP_EPS_DEFAULT = 0.1
 NORM_ADV_DEFAULT = True
 KL_COEF_DEFAULT = 0.04
 GRAD_CLIP_DEFAULT = 1.0
-LOSS_PREC_DEFAULT = 3
 
 
 @dataclass
@@ -71,7 +70,6 @@ class TrainingConfig:
     start_cluster_entropy_coef: float = -1.0
     off_action_penalty_coef: float = 0.0
     loo_vamp_reward_weight: float = 1.0
-    loss_prec: int = LOSS_PREC_DEFAULT
     grad_clip: float = GRAD_CLIP_DEFAULT
 
     # ── Policy ──────────────────────────────────────────────────────────
@@ -100,11 +98,7 @@ class TrainingConfig:
     pca_bins: int = 50
     pca_completion_threshold: float = 0.8
     pca_refresh_interval: int = 1
-    pca_reward_weight: float = 1.0
-    novelty_launch_weight: float = 1.0
-    novelty_traj_weight: float = 1.0
     max_pca_train: int = 0
-    anchor_balance_weight: float = 1.0
 
     # ── Anchoring ───────────────────────────────────────────────────────
     anchoring_round: bool = True
@@ -123,6 +117,29 @@ class TrainingConfig:
     # ── Multi-GPU ───────────────────────────────────────────────────────
     enable_multi_gpu: bool = False
 
+    # ── Torsion AR ─────────────────────────────────────────────────────
+    torsion_ar_checkpoint: str = ""
+    torsion_ar_mode: str = "backbone"
+    torsion_ar_global_token_set: str = ""
+    pretrain_torsion_ar: str = ""
+    torsion_ar_epochs: int = 10
+    torsion_ar_batch_size: int = 64
+    torsion_ar_stride: int = 1
+
+    # ── LOO-VAMP / ensemble ────────────────────────────────────────────
+    loo_vamp_exploration_coef: float = 1.0
+    loo_vamp_use_ucb: bool = True
+    disable_vamp_ensemble: bool = False
+    geom2vec_vamp_n_models: int = 3
+    tica_start_transition_weight: float = 1.0
+
+    # ── Experimental ───────────────────────────────────────────────────
+    use_muon: bool = False
+    old_init: str = "copy"
+    old_perturb_scale: float = 1e-3
+    least_count_starts: bool = False
+    uniform_starts: bool = False
+
     # ── Sub-config attribute names for __getattr__ delegation ───────────
     _SUB_CONFIGS = (
         "committor", "path", "steering", "vamp_bin", "msm_ig",
@@ -136,7 +153,7 @@ class TrainingConfig:
         "episodes": {"help": "Total RL training episodes.", "default_override": 20},
         "platform": {"help": "Simulation platform (CUDA/CPU).", "default_override": "CUDA"},
         "gen_device": {"help": "Device for generator/policy.", "default_override": "cuda:0"},
-        "pdb": {"help": "Endpoint A PDB file (topology + initial coords).", "default_override": "chignolin.pdb"},
+        "pdb": {"help": "Endpoint A PDB file (topology + initial coords).", "default_override": "chignolin.pdb", "aliases": ["--pdb-a"]},
         "pdb_a": {"skip": True},
         "pdb_b": "Endpoint B PDB file (path sampling target; requires --path-sampling).",
         # Loop selection
@@ -167,7 +184,6 @@ class TrainingConfig:
             "Discount for post-reset CV mismatch: reward *= exp(-coef*mae) (0=disabled)."
         ),
         "loo_vamp_reward_weight": "Weight for ΔLOO-VAMP2 reward (0=disabled).",
-        "loss_prec": {"skip": True},  # internal
         "grad_clip": "Gradient clipping threshold.",
         # Policy
         "policy_type": {
@@ -231,11 +247,7 @@ class TrainingConfig:
         "pca_bins": "Grid bins for novelty.",
         "pca_completion_threshold": "Threshold for PCA readiness.",
         "pca_refresh_interval": "Epochs between PCA/TICA updates.",
-        "pca_reward_weight": "Weight for coverage reward.",
-        "novelty_launch_weight": "Weight for launch novelty.",
-        "novelty_traj_weight": "Weight for trajectory novelty.",
         "max_pca_train": "Max frames for PCA training (0=all).",
-        "anchor_balance_weight": "Weight for dual-anchor balance reward.",
         # Anchoring
         "anchoring_round": {
             "help": "Run initial anchoring round before training.",
@@ -267,6 +279,60 @@ class TrainingConfig:
         # Multi-GPU
         "enable_multi_gpu": {
             "help": "Enable multi-GPU parallelization.",
+            "flag_only": True,
+        },
+        # Torsion AR
+        "torsion_ar_checkpoint": {
+            "help": "Pretrained TorsionAR policy checkpoint (.pt).",
+            "aliases": ["--torsion-ar-out"],
+        },
+        "torsion_ar_mode": {
+            "help": "Torsion channels for TorsionAR start policy.",
+            "choices": ["backbone", "backbone+sidechain"],
+        },
+        "torsion_ar_global_token_set": (
+            "Legacy compat; global token layout is taken from the checkpoint."
+        ),
+        "pretrain_torsion_ar": (
+            "Pretrain TorsionAR from trajectory directories (comma-separated) or .npz."
+        ),
+        "torsion_ar_epochs": "(Pretrain only) epochs.",
+        "torsion_ar_batch_size": "(Pretrain only) batch size.",
+        "torsion_ar_stride": "(Pretrain only) frame stride.",
+        # LOO-VAMP / ensemble
+        "loo_vamp_exploration_coef": "UCB exploration coefficient λ: score = μ + λ·σ.",
+        "loo_vamp_use_ucb": {
+            "help": "Use UCB uncertainty term (default).",
+            "no_flag": "--no-ucb",
+            "no_help": "Disable UCB uncertainty term (use μ only).",
+        },
+        "disable_vamp_ensemble": {
+            "help": "Disable VAMP ensemble (forces geom2vec_vamp_n_models=1).",
+            "flag": "--no-vamp-ensemble",
+            "flag_only": True,
+        },
+        "geom2vec_vamp_n_models": (
+            "Number of independent geom2vec VAMP lobe fits (ensemble size)."
+        ),
+        "tica_start_transition_weight": (
+            "Weight for start-to-end displacement bonus in projection space."
+        ),
+        # Experimental
+        "use_muon": {
+            "help": "Use Muon optimizer for 2D parameters.",
+            "flag_only": True,
+        },
+        "old_init": {
+            "help": "Initialization for old policy.",
+            "choices": ["copy", "perturb", "normal", "random"],
+        },
+        "old_perturb_scale": "Perturbation scale if old-init is 'perturb'.",
+        "least_count_starts": {
+            "help": "Always launch from least-populated state (RL start policy disabled).",
+            "no_help": "Use normal start policy (default).",
+        },
+        "uniform_starts": {
+            "help": "Force uniform probability distribution over all hard states.",
             "flag_only": True,
         },
     }
@@ -318,96 +384,7 @@ class TrainingConfig:
         populate_from_dataclass(parser, Geom2VecConfig, group_name="Geom2Vec")
         populate_from_dataclass(parser, IOConfig, group_name="I/O & Checkpointing")
 
-        # ── Non-dataclass args consumed by training loops directly ──────
-        g_pol = parser.add_argument_group("Policy Extras")
-        g_pol.add_argument(
-            "--use-muon", action="store_true",
-            help="Use Muon optimizer for 2D parameters.",
-        )
-        g_pol.add_argument(
-            "--old-init", default="copy",
-            choices=["copy", "perturb", "normal", "random"],
-            help="Initialization for old policy.",
-        )
-        g_pol.add_argument(
-            "--old-perturb-scale", type=float, default=1e-3,
-            help="Perturbation scale if old-init is 'perturb'.",
-        )
-        g_pol.add_argument(
-            "--least-count-starts", dest="least_count_starts",
-            action="store_true",
-            help="Always launch from least-populated state (RL start policy disabled).",
-        )
-        g_pol.add_argument(
-            "--no-least-count-starts", dest="least_count_starts",
-            action="store_false",
-        )
-        g_pol.add_argument(
-            "--uniform-starts", dest="uniform_starts",
-            action="store_true",
-            help="Force uniform probability distribution over all hard states.",
-        )
-
-        g_ar = parser.add_argument_group("Torsion AR")
-        g_ar.add_argument(
-            "--torsion-ar-checkpoint", "--torsion-ar-out",
-            dest="torsion_ar_checkpoint", default="",
-            help="Pretrained TorsionAR policy checkpoint (.pt).",
-        )
-        g_ar.add_argument(
-            "--torsion-ar-mode", dest="torsion_ar_mode",
-            default="backbone", choices=("backbone", "backbone+sidechain"),
-            help="Torsion channels for TorsionAR start policy.",
-        )
-        g_ar.add_argument(
-            "--torsion-ar-global-token-set", dest="torsion_ar_global_token_set",
-            default="",
-            help="Legacy compat; global token layout is taken from the checkpoint.",
-        )
-        g_ar.add_argument(
-            "--pretrain-torsion-ar", dest="pretrain_torsion_ar", default="",
-            help="Pretrain TorsionAR from trajectory directories (comma-separated) or .npz.",
-        )
-        g_ar.add_argument(
-            "--torsion-ar-epochs", dest="torsion_ar_epochs",
-            type=int, default=10, help="(Pretrain only) epochs.",
-        )
-        g_ar.add_argument(
-            "--torsion-ar-batch-size", dest="torsion_ar_batch_size",
-            type=int, default=64, help="(Pretrain only) batch size.",
-        )
-        g_ar.add_argument(
-            "--torsion-ar-stride", dest="torsion_ar_stride",
-            type=int, default=1, help="(Pretrain only) frame stride.",
-        )
-
-        g_loo = parser.add_argument_group("LOO-VAMP Controls")
-        g_loo.add_argument(
-            "--loo-vamp-exploration-coef", dest="loo_vamp_exploration_coef",
-            type=float, default=1.0,
-            help="UCB exploration coefficient λ: score = μ + λ·σ.",
-        )
-        g_loo.add_argument(
-            "--no-ucb", dest="loo_vamp_use_ucb", action="store_false",
-            help="Disable UCB uncertainty term (use μ only).",
-        )
-        g_loo.add_argument(
-            "--no-vamp-ensemble", dest="disable_vamp_ensemble",
-            action="store_true",
-            help="Disable VAMP ensemble (forces geom2vec_vamp_n_models=1).",
-        )
-        g_loo.add_argument(
-            "--geom2vec-vamp-n-models", dest="geom2vec_vamp_n_models",
-            type=int, default=3,
-            help="Number of independent geom2vec VAMP lobe fits (ensemble size).",
-        )
-        g_loo.add_argument(
-            "--tica-start-transition-weight", dest="tica_start_transition_weight",
-            type=float, default=1.0,
-            help="Weight for start-to-end displacement bonus in projection space.",
-        )
-
-        parser.set_defaults(least_count_starts=False, uniform_starts=False)
+        # All args are now auto-generated from dataclass fields + CLI_META.
 
     # ── Factory methods ─────────────────────────────────────────────────
 
@@ -427,11 +404,14 @@ class TrainingConfig:
             device_idx = 0
 
         # Solvent mode normalization.
+        # --implicit-solvent takes precedence: MDConfig defaults explicit_solvent=True,
+        # so passing --implicit-solvent alone would trigger both flags without this guard.
         implicit_flag = bool(get("implicit_solvent", False))
         explicit_flag = bool(get("explicit_solvent", False))
-        if implicit_flag and explicit_flag:
-            raise ValueError("Cannot set both --implicit-solvent and --explicit-solvent.")
-        explicit_solvent = bool(explicit_flag or (not implicit_flag))
+        if implicit_flag:
+            explicit_solvent = False
+        else:
+            explicit_solvent = bool(explicit_flag or True)
 
         # Build sub-configs from args.
         sub_configs = {}
@@ -528,6 +508,21 @@ class TrainingConfig:
         return cls.from_args(ns)
 
     def to_dict(self) -> dict:
-        """Serialize to a flat dict for YAML/JSON output."""
-        from dataclasses import asdict
-        return asdict(self)
+        """Serialize to a flat dict for YAML/JSON output.
+
+        Sub-configs are flattened so that ``from_dict(to_dict())`` roundtrips.
+        """
+        from dataclasses import fields as _fields, asdict as _asdict
+        flat: dict = {}
+        for f in _fields(self):
+            if f.name.startswith("_"):
+                continue
+            val = getattr(self, f.name)
+            if f.name in self._SUB_CONFIGS:
+                for sf in _fields(val):
+                    if sf.name.startswith("_") or sf.name == "CLI_META":
+                        continue
+                    flat[sf.name] = getattr(val, sf.name)
+            else:
+                flat[f.name] = val
+        return flat

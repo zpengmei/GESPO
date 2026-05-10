@@ -4,13 +4,12 @@
 def __getattr__(name: str):
     _lazy = {
         "GeomVecManager": ".geom2vec_manager",
-        "LOOVAMPRewards": ".loo_vamp_rewards",
+        "LOOVAMPRewards": "._reexports",
         "RetrievalManager": ".retrieval_manager",
-        "StateManager": ".state_manager",
         "EpochCoordinator": ".epoch_coordinator",
         "SamplingOrchestrator": ".sampling_orchestrator",
         "save_torsion_ar_policy": ".policy_io",
-        "graph_algorithms": ".graph_algorithms",
+        "graph_algorithms": "._reexports",
     }
     if name in _lazy:
         import importlib

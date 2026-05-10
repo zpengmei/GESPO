@@ -18,8 +18,8 @@ _openmm.unit = _openmm_unit
 # Add project root to path (mirrors existing tests)
 sys.path.append("/project/dinner/zpengmei/GESPO")
 
-from gespo.training.geom2vec_backbone.cache import EmbeddingCache
-from gespo.training.geom2vec_backbone.dataset import PairIndex, TimeLaggedIndexDataset
+from gespo.projections.geom2vec.cache import EmbeddingCache
+from gespo.projections.geom2vec.dataset import PairIndex, TimeLaggedIndexDataset
 
 
 def test_embedding_cache_stores_float32():

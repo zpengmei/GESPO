@@ -17,14 +17,14 @@ from dataclasses import dataclass
 from gespo.training.components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
 from gespo.training.components.retrieval_manager import RetrievalManager
 from gespo.training.components.policy_io import save_torsion_ar_policy
-from gespo.training.components.global_metrics import compute_globals_from_coords as _compute_globals_impl
-from gespo.training.components.vamp_bin_bonus import VampBinBonus
+from gespo.analysis.metrics import compute_globals_from_coords as _compute_globals_impl
+from gespo.rewards.vamp_bin import VampBinBonus
 from gespo.training.components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
 from gespo.training.components.retrieval_labels import refresh_retrieval_cache_labels as _refresh_labels_impl
-from gespo.training.components.msm_ig_bonus import MSMIGBonus
-from gespo.training.components import graph_algorithms as _graph
+from gespo.rewards.msm_ig import MSMIGBonus
+from gespo.rewards import connectivity as _graph
 from gespo.training.components.endpoint_loader import load_endpoint_ca_ref, load_boundary_plugin
-from gespo.training.components.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
+from gespo.projections.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
 from gespo.training.components import committor_utils as _cu
 from gespo.training.components.committor_state import CommittorState
 from gespo.training.dga_committor import (
@@ -33,7 +33,7 @@ from gespo.training.dga_committor import (
     fit_dga_committor_kmeans,
     fit_vamp_discrete_committor,
 )
-from gespo.training.geom2vec_backbone.vamp_trainer import train_vamp_lobe_from_cache
+from gespo.projections.geom2vec.vamp_trainer import train_vamp_lobe_from_cache
 
 import argparse
 import gc
@@ -78,8 +78,8 @@ from gespo.utils.plotting import plot_analysis_summary, plot_ramachandran_by_res
 from gespo.utils.selection import infer_protein_atom_indices
 from gespo.training.checkpointing import CheckpointManager
 from gespo.training.features import FeatureBuilder
-from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
-from gespo.training.geom2vec_backbone.inference import infer_geom2vec_embeddings
+from gespo.projections.geom2vec import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
+from gespo.projections.geom2vec.inference import infer_geom2vec_embeddings
 from gespo.training.optimization import GRPOOptimizer
 from gespo.training.rl import StateLogitPolicy, TorsionARPolicy
 from gespo.training.sampler import Sampler
@@ -93,7 +93,7 @@ from gespo.training.torsion_retrieval import (
     sample_from_topk,
 )
 from gespo.training.vamp_stats import SufficientStatistics as VAMPSufficientStatistics
-from gespo.training.components.lobe_projector import (
+from gespo.projections.lobe_projector import (
     state_probs_from_output_np as _state_probs_from_output_np,
     TrainedLobe as _TrainedLobe,
     VampPairRecord as _VampPairRecord,
@@ -6000,7 +6000,7 @@ def train(args: argparse.Namespace) -> None:
 
             try:
                 plot_analysis_summary(
-                    all_epoch_data[round_epoch_data_start:],
+                    all_epoch_data,
                     None,  # pca_scorer removed
                     envs[0].cv_names,
                     config.pdb,

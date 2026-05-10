@@ -18,7 +18,7 @@ sys.path.append("/project/dinner/zpengmei/GESPO")
 
 import mdtraj as md
 
-from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, infer_and_cache, infer_geom2vec_embeddings
+from gespo.projections.geom2vec import EmbeddingCache, Geom2VecTopologyCache, infer_and_cache, infer_geom2vec_embeddings
 
 
 class DummyGeom2VecRep(torch.nn.Module):

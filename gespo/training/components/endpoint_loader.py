@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import mdtraj as md
 import numpy as np
 
-from ..geom2vec_backbone import Geom2VecTopologyCache
+from gespo.projections.geom2vec import Geom2VecTopologyCache
 
 
 def load_endpoint_ca_ref(

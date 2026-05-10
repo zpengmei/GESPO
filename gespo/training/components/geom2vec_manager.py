@@ -26,7 +26,7 @@ from scipy.optimize import linear_sum_assignment
 
 from ...utils.selection import infer_protein_atom_indices
 
-from ..geom2vec_backbone import (
+from gespo.projections.geom2vec import (
     EmbeddingCache,
     Geom2VecTopologyCache,
     Geom2VecVAMPProjector,

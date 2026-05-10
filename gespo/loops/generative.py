@@ -13,17 +13,17 @@ Key differences vs the standard discrete-start loop:
 from __future__ import annotations
 from gespo.training.vamp_stats import SufficientStatistics
 from gespo.training.components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
-from gespo.training.components.loo_vamp_rewards import LOOVAMPRewards
+from gespo.rewards.loo_vamp import LOOVAMPRewards
 from gespo.training.components.retrieval_manager import RetrievalManager
 from gespo.training.components.epoch_coordinator import EpochCoordinator
 from gespo.training.components.sampling_orchestrator import SamplingOrchestrator
 from gespo.training.components.policy_io import save_torsion_ar_policy
-from gespo.training.components.global_metrics import compute_globals_from_coords as _compute_globals_impl
-from gespo.training.components.vamp_bin_bonus import VampBinBonus
+from gespo.analysis.metrics import compute_globals_from_coords as _compute_globals_impl
+from gespo.rewards.vamp_bin import VampBinBonus
 from gespo.training.components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
 from gespo.training.components.retrieval_labels import refresh_retrieval_cache_labels as _refresh_labels_impl
-from gespo.training.components.msm_ig_bonus import MSMIGBonus
-from gespo.training.components.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
+from gespo.rewards.msm_ig import MSMIGBonus
+from gespo.projections.vamp_refresh import refresh_geom2vec_vamp as _refresh_geom2vec_vamp_impl
 
 import argparse
 import gc
@@ -68,7 +68,7 @@ from gespo.utils.plotting import plot_analysis_summary, plot_ramachandran_by_res
 from gespo.utils.selection import infer_protein_atom_indices
 from gespo.training.checkpointing import CheckpointManager
 from gespo.training.features import FeatureBuilder
-from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
+from gespo.projections.geom2vec import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
 from gespo.training.optimization import GRPOOptimizer
 from gespo.training.rl import StateLogitPolicy, TorsionARPolicy
 from gespo.training.sampler import Sampler
@@ -565,6 +565,7 @@ def train(args: argparse.Namespace) -> None:
 
     # VAMP-bin exploration bonus manager (2D bin-count statistics).
     vamp_bin_mgr = VampBinBonus()
+    vamp_bin_counted_keys: set = set()
 
     # MSM information-gain exploration bonus manager.
     msm_ig_mgr = MSMIGBonus()
@@ -2510,7 +2511,7 @@ def train(args: argparse.Namespace) -> None:
 
             try:
                 plot_analysis_summary(
-                    all_epoch_data[round_epoch_data_start:],
+                    all_epoch_data,
                     None,  # pca_scorer removed
                     envs[0].cv_names,
                     config.pdb,

@@ -5,10 +5,10 @@ from typing import Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import VonMises
+from torch.distributions import Categorical, Normal, VonMises
 
 from gespo.models.transformer import PositionalEncoding, TransformerEncoder
-from .von_mises_start import mixture_vonmises_log_prob
+from .von_mises_start import mixture_normal_log_prob, mixture_vonmises_log_prob
 
 class TorsionARPolicy(nn.Module):
     """

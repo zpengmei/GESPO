@@ -12,6 +12,11 @@ import mdtraj as md
 import numpy as np
 import torch
 from openmm import LangevinIntegrator, MonteCarloBarostat, Vec3
+from openmm.app import ForceField, Modeller, NoCutoff, PME, PDBFile, Simulation
+from openmm.app.forcefield import HBonds
+from openmm.unit import (
+    bar, femtoseconds, kelvin, kilojoule_per_mole, molar, nanometer, picosecond,
+)
 
 from ..utils.openmm_utils import choose_platform, NDimensionalGaussianBias
 from ..utils.geometry import (
@@ -157,10 +162,11 @@ class PeptideSampler:
         platform, platform_props = choose_platform(self.platform_name, self.platform_device)
         self.implicit_solvent = bool(getattr(args, "implicit_solvent", False))
         explicit_flag = bool(getattr(args, "explicit_solvent", False))
-        if self.implicit_solvent and explicit_flag:
-            raise ValueError("Cannot enable both implicit and explicit solvent.")
-        # Default to explicit solvent unless implicit is requested.
-        self.explicit_solvent = explicit_flag or not self.implicit_solvent
+        # --implicit-solvent takes precedence over the explicit_solvent default.
+        if self.implicit_solvent:
+            self.explicit_solvent = False
+        else:
+            self.explicit_solvent = explicit_flag or True
         self.explicit_solvent_replay_full_coords = bool(getattr(args, "explicit_solvent_replay_full_coords", False))
         # Explicit-solvent: box/ions
         self.solvent_padding_nm = float(getattr(args, "solvent_padding_nm", 1.0))

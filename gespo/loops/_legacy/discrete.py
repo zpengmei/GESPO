@@ -40,7 +40,7 @@ from gespo.training.optimization import GRPOOptimizer
 
 from gespo.utils.plotting import plot_ramachandran_by_residue, plot_analysis_summary
 from gespo.utils.geometry import _dihedral, find_all_backbone_dihedrals, calculate_rmsd
-from gespo.training.geom2vec_backbone import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
+from gespo.projections.geom2vec import EmbeddingCache, Geom2VecTopologyCache, Geom2VecVAMPProjector, infer_and_cache
 
 
 from gespo.training.vamp_stats import SufficientStatistics  # noqa: E402 — canonical LOO VAMP-2 stats

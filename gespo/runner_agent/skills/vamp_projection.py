@@ -60,7 +60,7 @@ class VAMPProjectionSkill(Skill):
 
             # Try to use the GESPO geom2vec backbone infrastructure
             try:
-                from gespo.training.geom2vec_backbone.projector import Geom2VecVAMPProjector
+                from gespo.projections.geom2vec.projector import Geom2VecVAMPProjector
                 projector = Geom2VecVAMPProjector.from_checkpoints(
                     geom2vec_ckpt=g2v_ckpt,
                     vamp_ckpt=vamp_ckpt,
