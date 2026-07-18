@@ -203,7 +203,7 @@ class CheckpointManager:
                 print(f"[History] Failed to load {npz}: {e}")
         return restored, traj_lengths
 
-    def bootstrap_history_from_dcd(self, all_epoch_data: list, env, base_dir: str):
+    def bootstrap_history_from_dcd(self, all_epoch_data: list, env, base_dir: str, ligand_smiles: str = ""):
         """Bootstrap history from existing trajectory files (.dcd/.xtc).
 
         base_dir may be a single path or a comma/colon-separated list of paths.
@@ -331,6 +331,23 @@ class CheckpointManager:
         except Exception:
             dihedral_indices = None
 
+        # Precompute ligand rotatable dihedral atom indices (in full-system topology).
+        # These will be re-detected per-topology in the full-fallback path because metad
+        # seeds may use a local simulation_topology.pdb with different atom counts.
+        lig_dihedral_indices_full = None  # [(label, (a,b,c,d)) in full-topology atom indices]
+        try:
+            if ligand_smiles:
+                from gespo.utils.geometry import find_ligand_rotatable_dihedrals_smiles
+                lig_dihedral_indices_full = find_ligand_rotatable_dihedrals_smiles(md_top_full, ligand_smiles)
+            else:
+                from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+                lig_dihedral_indices_full = find_ligand_rotatable_dihedrals(md_top_full)
+            if lig_dihedral_indices_full:
+                print(f"[History DCD] Found {len(lig_dihedral_indices_full)} ligand rotatable dihedral(s) in env topology")
+        except Exception as exc_lig:
+            print(f"[History DCD] Warning: failed to detect ligand dihedrals: {exc_lig}")
+            lig_dihedral_indices_full = None
+
         for fpath in dcd_files:
             try:
                 file_count = 0  # total frames accepted from this file
@@ -341,18 +358,59 @@ class CheckpointManager:
 
                 def _iter_protein_chunks():
                     # First try: protein-only DCD (common default).
+                    # Yields (protein_trajectory, None) since no ligand atoms in protein-only DCD.
                     for tr0 in md.iterload(str(fpath), top=md_top, stride=stride, chunk=batch_size):
-                        yield tr0
+                        yield tr0, None
 
                 def _iter_full_then_slice_chunks():
                     # Fallback: full-system DCD (explicit-solvent replay mode).
-                    for tr_full in md.iterload(str(fpath), top=md_top_full, stride=stride, chunk=batch_size):
-                        yield tr_full.atom_slice(protein_indices)
+                    # Try directory-local simulation_topology.pdb first (may have
+                    # different atom count than the env topology, e.g. metad seeds).
+                    # Yields (protein_trajectory, ligand_torsions_chunk_or_None).
+                    _local_top = None
+                    for _candidate in [fpath.parent / "simulation_topology.pdb",
+                                       fpath.parent.parent / "simulation_topology.pdb"]:
+                        if _candidate.exists():
+                            try:
+                                _local_top = md.load(str(_candidate)).topology
+                            except Exception:
+                                pass
+                            break
+                    _use_top = _local_top if _local_top is not None else md_top_full
+                    _prot_idx = _use_top.select("protein")
+                    if _prot_idx is None or len(_prot_idx) == 0:
+                        _prot_idx = protein_indices
+                    # Detect ligand dihedrals in this trajectory's actual topology.
+                    _lig_dh_local = None
+                    try:
+                        if ligand_smiles:
+                            from gespo.utils.geometry import find_ligand_rotatable_dihedrals_smiles
+                            _lig_dh_local = find_ligand_rotatable_dihedrals_smiles(_use_top, ligand_smiles)
+                        else:
+                            from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+                            _lig_dh_local = find_ligand_rotatable_dihedrals(_use_top)
+                    except Exception:
+                        _lig_dh_local = None
+                    _lig_atoms_np = None
+                    if _lig_dh_local:
+                        try:
+                            _lig_atoms_np = np.array([atoms for _, atoms in _lig_dh_local], dtype=int)
+                        except Exception:
+                            _lig_atoms_np = None
+                    for tr_full in md.iterload(str(fpath), top=_use_top, stride=stride, chunk=batch_size):
+                        # Compute ligand torsions BEFORE slicing (needs ligand atoms).
+                        lig_tors_chunk = None
+                        if _lig_atoms_np is not None and _lig_atoms_np.shape[0] > 0:
+                            try:
+                                lig_tors_chunk = md.compute_dihedrals(tr_full, _lig_atoms_np).astype(np.float32, copy=False)
+                            except Exception:
+                                lig_tors_chunk = None
+                        yield tr_full.atom_slice(_prot_idx), lig_tors_chunk
 
                 used_full_fallback = False
                 try:
                     chunk_iter = _iter_protein_chunks()
-                    for tr in chunk_iter:
+                    for tr, lig_tors_chunk in chunk_iter:
                         if tr.n_frames == 0:
                             continue
 
@@ -409,7 +467,12 @@ class CheckpointManager:
                             src_frame = (int(strided_cursor) + int(frame_idx)) * int(stride)
                             file_frame_idx.append(int(src_frame))
 
-                            history_epoch.append((cv_vals.copy(), coords_nm.copy()))
+                            # Extract ligand torsion for this frame (empty if not available).
+                            lig_tors_frame = np.zeros((0,), dtype=np.float32)
+                            if lig_tors_chunk is not None and frame_idx < lig_tors_chunk.shape[0]:
+                                lig_tors_frame = lig_tors_chunk[frame_idx].astype(np.float32, copy=False)
+
+                            history_epoch.append((cv_vals.copy(), coords_nm.copy(), 0.0, 0.0, lig_tors_frame.copy()))
                             imported += 1
                             file_count += 1
 
@@ -431,7 +494,7 @@ class CheckpointManager:
                         )
                     except Exception:
                         pass
-                    for tr in _iter_full_then_slice_chunks():
+                    for tr, lig_tors_chunk in _iter_full_then_slice_chunks():
                         if tr.n_frames == 0:
                             continue
 
@@ -483,7 +546,12 @@ class CheckpointManager:
                             src_frame = (int(strided_cursor) + int(frame_idx)) * int(stride)
                             file_frame_idx.append(int(src_frame))
 
-                            history_epoch.append((cv_vals.copy(), coords_nm.copy()))
+                            # Extract ligand torsion for this frame (empty if not available).
+                            lig_tors_frame = np.zeros((0,), dtype=np.float32)
+                            if lig_tors_chunk is not None and frame_idx < lig_tors_chunk.shape[0]:
+                                lig_tors_frame = lig_tors_chunk[frame_idx].astype(np.float32, copy=False)
+
+                            history_epoch.append((cv_vals.copy(), coords_nm.copy(), 0.0, 0.0, lig_tors_frame.copy()))
                             imported += 1
                             file_count += 1
 

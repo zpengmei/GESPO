@@ -307,24 +307,41 @@ class Geom2VecManager:
         except Exception as exc_dp:
             print(f"[Geom2Vec] Warning: failed to enable DataParallel ({exc_dp}); continuing without DP.", flush=True)
 
-        # Build protein-only topology
+        # Build protein+ligand topology (include non-water, non-ion residues)
         try:
             md_top_full = self.env_ref.md_topology
-            protein_indices = md_top_full.select("protein")
-            if protein_indices is None or len(protein_indices) == 0:
-                protein_indices = infer_protein_atom_indices(md_top_full, include_caps=True, allow_empty=True)
-            self.md_top_protein = md_top_full.subset(protein_indices)
+            # Select protein heavy framework + any non-solvent residues (ligands, cofactors)
+            _solvent_ions = {"HOH", "WAT", "TIP3", "NA", "CL", "K", "MG", "ZN", "CA2", "NA+", "CL-"}
+            keep_idx = []
+            for atom in md_top_full.atoms:
+                rname = str(atom.residue.name).upper()
+                # Exclude solvent/ions. CA (calcium) detected via single-atom residue.
+                if rname in _solvent_ions:
+                    continue
+                # Skip single-atom residues that look like ions (Ca, Cl, Na, K, etc.)
+                if atom.residue.n_atoms == 1 and atom.element.symbol in ("Ca", "Cl", "Na", "K", "Mg", "Zn"):
+                    continue
+                keep_idx.append(atom.index)
+            if not keep_idx:
+                protein_indices = md_top_full.select("protein")
+                if protein_indices is None or len(protein_indices) == 0:
+                    protein_indices = infer_protein_atom_indices(md_top_full, include_caps=True, allow_empty=True)
+                keep_idx = list(protein_indices)
+            import numpy as _np
+            self.md_top_protein = md_top_full.subset(_np.asarray(keep_idx, dtype=int))
         except Exception:
             self.md_top_protein = None
 
         if self.md_top_protein is None:
-            raise RuntimeError("[Geom2Vec] Failed to build protein-only mdtraj topology for embedding inference.")
+            raise RuntimeError("[Geom2Vec] Failed to build protein+ligand mdtraj topology for embedding inference.")
 
         self.topology_cache = Geom2VecTopologyCache.from_mdtraj(
             self.md_top_protein,
             exclude_hydrogens=self.exclude_hydrogens,
-            meta={"selection": "protein"},
+            meta={"selection": "protein+ligand"},
         )
+        print(f"[Geom2Vec] Topology cache: {self.md_top_protein.n_atoms} atoms, "
+              f"{self.md_top_protein.n_residues} residues (protein+ligand)")
 
         # Create projectors (softmax and linear lobes)
         self.projector = Geom2VecVAMPProjector(
@@ -448,14 +465,21 @@ class Geom2VecManager:
                 coords_nm = np.asarray(traj.xyz, dtype=np.float32)
                 infer_stride = 1  # Already strided during load
             except Exception:
-                # Fallback: load with full topology and slice to protein
+                # Fallback: load with full topology and slice to protein+ligand
                 try:
                     md_top_full = self.env_ref.md_topology
-                    protein_indices = md_top_full.select("protein")
-                    if protein_indices is None or len(protein_indices) == 0:
-                        protein_indices = infer_protein_atom_indices(md_top_full, include_caps=True, allow_empty=True)
+                    _solvent = {"HOH", "WAT", "TIP3", "NA", "CL", "K", "MG", "ZN", "CA2", "NA+", "CL-"}
+                    keep = []
+                    for a in md_top_full.atoms:
+                        if a.residue.name.upper() in _solvent:
+                            continue
+                        if a.residue.n_atoms == 1 and a.element.symbol in ("Ca", "Cl", "Na", "K", "Mg", "Zn"):
+                            continue
+                        keep.append(a.index)
+                    if not keep:
+                        keep = list(md_top_full.select("protein"))
                     traj_full = md.load(str(dcd_path), top=md_top_full, stride=effective_stride)
-                    traj = traj_full.atom_slice(protein_indices)
+                    traj = traj_full.atom_slice(np.asarray(keep, dtype=int))
                     coords_nm = np.asarray(traj.xyz, dtype=np.float32)
                     infer_stride = 1
                 except Exception as exc2:

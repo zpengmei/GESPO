@@ -46,6 +46,10 @@ class RetrievalManager:
         self.dcd_paths: List[Optional[str]] = []
         self.dcd_frame_idx: List[int] = []
         self.globals: List[np.ndarray] = []
+        # Per-frame ligand rotatable dihedrals (radians), shape (n_ligand_dihedrals,).
+        # Order matches find_ligand_rotatable_dihedrals(md_topology) at the time the frame was cached.
+        # Empty array if no ligand or computation failed.
+        self.lig_torsions: List[np.ndarray] = []
         self.keys: List[str] = []
         self.frame_idx: List[int] = []
         self.labels: Optional[np.ndarray] = None
@@ -66,6 +70,7 @@ class RetrievalManager:
         new_dcd_paths: List[Optional[str]],
         new_dcd_frame_idx: List[int],
         new_globals: Optional[List[np.ndarray]] = None,
+        new_lig_torsions: Optional[List[np.ndarray]] = None,
         tag: str = "",
     ) -> int:
         """
@@ -102,6 +107,13 @@ class RetrievalManager:
                 for _ in range(len(new_coords))
             ])
         
+        # Handle ligand torsions (pad with empty arrays if not provided)
+        if new_lig_torsions is not None and len(new_lig_torsions) == len(new_coords):
+            self.lig_torsions.extend(list(new_lig_torsions))
+        else:
+            # Maintain alignment with cv/coords even when not provided
+            self.lig_torsions.extend([np.zeros((0,), dtype=np.float32) for _ in range(len(new_coords))])
+
         self.keys.extend(new_keys)
         self.frame_idx.extend(new_frame_idx)
         self.dcd_paths.extend(new_dcd_paths)
@@ -135,6 +147,7 @@ class RetrievalManager:
         self.dcd_paths = [self.dcd_paths[i] for i in keep_idx if i < len(self.dcd_paths)]
         self.dcd_frame_idx = [self.dcd_frame_idx[i] for i in keep_idx if i < len(self.dcd_frame_idx)]
         self.globals = [self.globals[i] for i in keep_idx if i < len(self.globals)]
+        self.lig_torsions = [self.lig_torsions[i] for i in keep_idx if i < len(self.lig_torsions)]
         self.keys = [self.keys[i] for i in keep_idx if i < len(self.keys)]
         self.frame_idx = [self.frame_idx[i] for i in keep_idx if i < len(self.frame_idx)]
         
@@ -197,6 +210,7 @@ class RetrievalManager:
         self.dcd_paths = []
         self.dcd_frame_idx = []
         self.globals = []
+        self.lig_torsions = []
         self.keys = []
         self.frame_idx = []
         self.labels = None

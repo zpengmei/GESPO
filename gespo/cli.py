@@ -205,6 +205,12 @@ def _cmd_pretrain(args: argparse.Namespace) -> None:
         stride=int(getattr(args, "stride", 1) or 1),
         global_token_set=str(getattr(args, "global_token_set", "rmsd_e2e") or "rmsd_e2e"),
         torsion_mode=str(getattr(args, "torsion_mode", "backbone") or "backbone"),
+        ligand_smiles=str(getattr(args, "ligand_smiles", "") or ""),
+        reweight_zenodo_dir=str(getattr(args, "reweight_zenodo_dir", "") or ""),
+        reweight_ref_pdb=str(getattr(args, "reweight_ref_pdb", "") or ""),
+        reweight_labels_npz=str(getattr(args, "reweight_labels_npz", "") or ""),
+        reweight_alpha=float(getattr(args, "reweight_alpha", 1.0) or 1.0),
+        pocket_ref_pdb=str(getattr(args, "pocket_ref_pdb", "") or ""),
     )
 
 
@@ -282,6 +288,26 @@ def main():
     pretrain_parser.add_argument("--stride", type=int, default=1)
     pretrain_parser.add_argument("--global-token-set", default="rmsd_e2e")
     pretrain_parser.add_argument("--torsion-mode", default="backbone", choices=["backbone", "backbone_chi"])
+    pretrain_parser.add_argument("--ligand-smiles", default="",
+                                  help="SMILES of the ligand (for RDKit-based rotatable bond detection). "
+                                       "When provided, uses standard cheminformatics rotatable bond definition "
+                                       "(allows H as 4th dihedral atom).")
+    pretrain_parser.add_argument("--reweight-zenodo-dir", default="",
+                                  help="If set, cluster training frames into 7 macrostates (loop RMSDs vs 3PTB, "
+                                       "k-means anchored on Zenodo cnew-2micro trajectories) and use importance "
+                                       "weights to balance the per-state contribution (uniform across states).")
+    pretrain_parser.add_argument("--pocket-ref-pdb", default="",
+                                  help="Reference PDB with bound ligand for pocket auto-detection. "
+                                       "Use when --pdb is an apo structure without ligand.")
+    pretrain_parser.add_argument("--reweight-ref-pdb", default="",
+                                  help="Reference PDB for loop RMSD computation (default: same as --pdb).")
+    pretrain_parser.add_argument("--reweight-labels-npz", default="",
+                                  help="Path to precomputed labels.npz (from compute_vamp_reweight.py). "
+                                       "Provides per-frame cluster labels; weights = 1/cluster_count^alpha. "
+                                       "Use this for clean (non-Plattner) reweighting in geom2vec-VAMP space.")
+    pretrain_parser.add_argument("--reweight-alpha", type=float, default=1.0,
+                                  help="Exponent for reweighting: weight = 1/count^alpha. "
+                                       "alpha=1 is standard uniform; alpha=2 aggressively upweights rare clusters.")
 
     # --- gespo config ---
     config_parser = subparsers.add_parser("config", help="Config utilities")

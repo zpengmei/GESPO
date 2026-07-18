@@ -27,6 +27,7 @@ class RewardTerms:
     start_basin: Optional[np.ndarray] = None
     vamp_bin: Optional[np.ndarray] = None
     msm_ig: Optional[np.ndarray] = None
+    start_distance: Optional[np.ndarray] = None
     committor_progress: Optional[np.ndarray] = None
     committor_bin_entropy: Optional[np.ndarray] = None
     committor_tube: Optional[np.ndarray] = None
@@ -110,6 +111,7 @@ class RewardCombiner:
         self.start_cluster_coef = float(getattr(config, "start_cluster_entropy_coef", 0.0) or 0.0)
         self.vamp_bin_coef = float(getattr(config, "vamp_bin_entropy_coef", 0.0) or 0.0)
         self.msm_ig_coef = float(getattr(config, "msm_ig_reward_coef", 0.0) or 0.0)
+        self.start_distance_coef = float(getattr(config, "start_distance_reward_coef", 0.0) or 0.0)
         self.off_action_coef = float(getattr(config, "off_action_penalty_coef", 0.0) or 0.0)
 
         # Committor coefficients
@@ -130,10 +132,12 @@ class RewardCombiner:
         # EMA normalizers (per-term)
         vamp_bin_beta = float(getattr(config, "vamp_bin_norm_ema_beta", 0.9) or 0.9)
         msm_ig_beta = float(getattr(config, "msm_ig_norm_ema_beta", 0.9) or 0.9)
+        start_distance_beta = float(getattr(config, "start_distance_norm_ema_beta", 0.9) or 0.9)
         comm_beta = float(getattr(config, "committor_norm_ema_beta", 0.9) or 0.9)
 
         self._norm_vamp_bin = EMANormalizer(vamp_bin_beta)
         self._norm_msm_ig = EMANormalizer(msm_ig_beta)
+        self._norm_start_distance = EMANormalizer(start_distance_beta)
         self._norm_comm_progress = EMANormalizer(comm_beta)
         self._norm_comm_bin_ent = EMANormalizer(comm_beta)
         self._norm_comm_tube = EMANormalizer(comm_beta)
@@ -168,7 +172,8 @@ class RewardCombiner:
         # Compute target scale for normalizing other terms to LOO-VAMP magnitude
         eps = 1e-8
         try:
-            loo_std = float(np.std(np.asarray(terms.loo_vamp or [0], dtype=np.float32)))
+            loo_arr = np.asarray(terms.loo_vamp if terms.loo_vamp is not None else [0], dtype=np.float32)
+            loo_std = float(np.std(loo_arr))
             target_scale = self.loo_weight * loo_std if np.isfinite(loo_std) and loo_std > eps else 0.0
         except Exception:
             target_scale = 0.0
@@ -189,6 +194,8 @@ class RewardCombiner:
                                         self._norm_vamp_bin, target_scale, "vamp_bin", metrics)
         combined = self._add_normalized(combined, terms.msm_ig, self.msm_ig_coef,
                                         self._norm_msm_ig, target_scale, "msm_ig", metrics)
+        combined = self._add_normalized(combined, terms.start_distance, self.start_distance_coef,
+                                        self._norm_start_distance, target_scale, "start_distance", metrics)
         combined = self._add_normalized(combined, terms.committor_progress, self.comm_progress_coef,
                                         self._norm_comm_progress, target_scale, "comm_progress", metrics)
         combined = self._add_normalized(combined, terms.committor_bin_entropy, self.comm_bin_ent_coef,

@@ -33,6 +33,10 @@ def compute_globals_from_coords(
     ref_ca_b_nm: Optional[np.ndarray] = None,
     adk_token_indices: Optional[Any] = None,
     ppi_token_indices: Optional[PPITokenIndices] = None,
+    pocket_ca_local: Optional[np.ndarray] = None,
+    pocket_ref_ca_nm: Optional[np.ndarray] = None,
+    prot_heavy_local: Optional[np.ndarray] = None,
+    lig_heavy_local: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Compute per-frame global metrics for a list of protein coordinate frames (nm).
 
@@ -183,6 +187,37 @@ def compute_globals_from_coords(
             elif key_l.startswith("rg"):
                 if rg_nm is not None:
                     out[:, j] = rg_nm
+            elif key_l == "pocket_rmsd_nm":
+                if (pocket_ca_local is not None and pocket_ref_ca_nm is not None
+                        and pocket_ca_local.size >= 2):
+                    try:
+                        pocket_ca_traj = np.asarray(
+                            [np.asarray(c, dtype=np.float64)[pocket_ca_local] for c in coords_list], dtype=np.float64)
+                        out[:, j] = calculate_rmsd(pocket_ca_traj, pocket_ref_ca_nm, atom_indices=None).astype(np.float32)
+                    except Exception:
+                        pass
+            elif key_l in ("n_contacts_scaled", "n_contacts"):
+                if (prot_heavy_local is not None and lig_heavy_local is not None
+                        and prot_heavy_local.size > 0 and lig_heavy_local.size > 0):
+                    try:
+                        for fi, c in enumerate(coords_list):
+                            c = np.asarray(c, dtype=np.float64)
+                            dists = np.linalg.norm(
+                                c[prot_heavy_local, :][:, None, :] - c[lig_heavy_local, :][None, :, :], axis=-1)
+                            out[fi, j] = float((dists < 0.4).sum()) / 100.0
+                    except Exception:
+                        pass
+            elif key_l == "lig_pocket_dist_nm":
+                if (pocket_ca_local is not None and lig_heavy_local is not None
+                        and pocket_ca_local.size > 0 and lig_heavy_local.size > 0):
+                    try:
+                        for fi, c in enumerate(coords_list):
+                            c = np.asarray(c, dtype=np.float64)
+                            lig_com    = c[lig_heavy_local].mean(axis=0)
+                            pocket_com = c[pocket_ca_local].mean(axis=0)
+                            out[fi, j] = float(np.linalg.norm(lig_com - pocket_com))
+                    except Exception:
+                        pass
             elif adk_vals is not None and key in adk_name_to_col:
                 out[:, j] = adk_vals[:, adk_name_to_col[key]]
     except Exception:

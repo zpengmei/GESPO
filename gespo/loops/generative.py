@@ -28,6 +28,95 @@ from gespo.projections.vamp_refresh import refresh_geom2vec_vamp as _refresh_geo
 import argparse
 import gc
 import json
+
+
+def _log_ligand_pocket_stats(
+    epoch: int,
+    traj_dcd_paths,
+    sim_top_path: str,
+    *,
+    lig_names=("UNK", "BEN", "LIG"),
+    pocket_resname="ASP",
+    pocket_seq_pos=170,
+    bound_cutoff_A=6.0,
+    dissociated_cutoff_A=15.0,
+):
+    """Log per-walker ligand-pocket distance stats after each epoch.
+
+    Computes minimum heavy-atom distance between ligand and Asp189 from DCD files.
+    Prints a concise summary: mean/min/max distance, % bound, % dissociated.
+    """
+    try:
+        import mdtraj as _md
+    except ImportError:
+        return
+    if not traj_dcd_paths or not sim_top_path:
+        return
+    import os as _os
+    if not _os.path.isfile(sim_top_path):
+        return
+
+    try:
+        ref = _md.load(sim_top_path)
+        top = ref.topology
+        prot_res = [r for r in top.residues if r.is_protein]
+        if pocket_seq_pos >= len(prot_res):
+            return
+        pocket_resseq = prot_res[pocket_seq_pos].resSeq
+        lig_heavy = np.array([a.index for a in top.atoms
+                              if a.residue.name in lig_names and a.element.symbol != "H"], dtype=int)
+        pocket_heavy = np.array([a.index for a in top.atoms
+                                 if a.residue.resSeq == pocket_resseq and a.element.symbol != "H"], dtype=int)
+        if lig_heavy.size == 0 or pocket_heavy.size == 0:
+            return
+        pairs = np.array([(i, j) for i in lig_heavy for j in pocket_heavy])
+    except Exception:
+        return
+
+    all_dists = []
+    per_walker = []
+    for w_idx, dcd_path in enumerate(traj_dcd_paths):
+        if dcd_path is None or not _os.path.isfile(str(dcd_path)):
+            per_walker.append(None)
+            continue
+        try:
+            traj = _md.load(str(dcd_path), top=sim_top_path)
+            dists_nm = _md.compute_distances(traj, pairs)
+            min_dists_A = dists_nm.min(axis=1) * 10.0
+            all_dists.append(min_dists_A)
+            per_walker.append(min_dists_A)
+        except Exception:
+            per_walker.append(None)
+
+    if not all_dists:
+        return
+
+    all_d = np.concatenate(all_dists)
+    n_total = len(all_d)
+    pct_bound = np.sum(all_d < bound_cutoff_A) / n_total * 100
+    pct_dissoc = np.sum(all_d > dissociated_cutoff_A) / n_total * 100
+
+    print(
+        f"[Ligand-Pocket - Epoch {epoch}] "
+        f"BEN-Asp189 min dist (Å): mean={np.mean(all_d):.1f}, "
+        f"median={np.median(all_d):.1f}, "
+        f"min={np.min(all_d):.1f}, max={np.max(all_d):.1f} | "
+        f"bound(<{bound_cutoff_A}Å)={pct_bound:.1f}%, "
+        f"dissoc(>{dissociated_cutoff_A}Å)={pct_dissoc:.1f}%",
+        flush=True,
+    )
+
+    # Per-walker breakdown
+    walker_strs = []
+    for w_idx, wd in enumerate(per_walker):
+        if wd is None:
+            walker_strs.append(f"W{w_idx:02d}=N/A")
+        else:
+            walker_strs.append(
+                f"W{w_idx:02d}: mean={np.mean(wd):.1f} min={np.min(wd):.1f} max={np.max(wd):.1f}"
+            )
+    for ws in walker_strs:
+        print(f"  {ws}", flush=True)
 import math
 import copy
 import os
@@ -244,19 +333,10 @@ def train(args: argparse.Namespace) -> None:
         print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
         residue_types_1d = np.zeros((env_ref.n_residues,), dtype=np.int64)
 
-    if residue_types_1d.shape[0] != env_ref.n_residues:
-        print(
-            f"[TorsionAR] Warning: residue type length {residue_types_1d.shape[0]} != env.n_residues {env_ref.n_residues}; "
-            "truncating/padding."
-        )
-        if residue_types_1d.shape[0] > env_ref.n_residues:
-            residue_types_1d = residue_types_1d[: env_ref.n_residues]
-        else:
-            pad = np.full((env_ref.n_residues - residue_types_1d.shape[0],), fallback_idx, dtype=np.int64)
-            residue_types_1d = np.concatenate([residue_types_1d, pad], axis=0)
-
-    residue_types_tensor = torch.as_tensor(residue_types_1d, device=torch_device, dtype=torch.long)
-    residue_types_batch = residue_types_tensor.unsqueeze(0).expand(config.grp_size, -1)
+    # Note: residue_types_1d may be larger than env.n_residues when the AR model
+    # includes ligand torsion slots. Final size is determined after AR checkpoint
+    # is loaded (see num_residues below). For now, keep the full PDB-derived types.
+    _pdb_residue_types = residue_types_1d  # save for later resizing
 
     phi_exists = torch.from_numpy(env_ref._phi_exists.astype(bool)).to(torch_device)
     psi_exists = torch.from_numpy(env_ref._psi_exists.astype(bool)).to(torch_device)
@@ -310,9 +390,14 @@ def train(args: argparse.Namespace) -> None:
                 global_token_names = list(ADK_GLOBAL_TOKEN_NAMES)
             else:
                 global_token_names = [f"global_{i}" for i in range(max(0, n_global_tokens))]
-        if num_residues != env_ref.n_residues:
+        if num_residues < env_ref.n_residues:
             raise RuntimeError(
-                f"TorsionAR checkpoint expects {num_residues} residues but env has {env_ref.n_residues}."
+                f"TorsionAR checkpoint has fewer residues ({num_residues}) than env ({env_ref.n_residues})."
+            )
+        if num_residues > env_ref.n_residues:
+            print(
+                f"[TorsionAR] Model has {num_residues} residues, env has {env_ref.n_residues}; "
+                f"extra {num_residues - env_ref.n_residues} residue(s) are ligand torsion slots."
             )
         agent = TorsionARPolicy(
             num_residues=num_residues,
@@ -367,6 +452,18 @@ def train(args: argparse.Namespace) -> None:
         agent_old.eval()
         global_token_names = []
         print("[TorsionAR] Initialized new policy (no pretrained checkpoint provided)")
+
+    # ------------------------------------------------------------------
+    # Finalize residue_types to match the AR model's num_residues.
+    # ------------------------------------------------------------------
+    residue_types_1d = _pdb_residue_types
+    if residue_types_1d.shape[0] < num_residues:
+        pad = np.full((num_residues - residue_types_1d.shape[0],), fallback_idx, dtype=np.int64)
+        residue_types_1d = np.concatenate([residue_types_1d, pad])
+    elif residue_types_1d.shape[0] > num_residues:
+        residue_types_1d = residue_types_1d[:num_residues]
+    residue_types_tensor = torch.as_tensor(residue_types_1d, device=torch_device, dtype=torch.long)
+    residue_types_batch = residue_types_tensor.unsqueeze(0).expand(config.grp_size, -1)
 
     # ------------------------------------------------------------------
     # Angle masks and χ torsion map (policy sampling, retrieval, steering).
@@ -437,6 +534,30 @@ def train(args: argparse.Namespace) -> None:
     if n_chi > 0 and n_angles > 3:
         angle_exists_np[:, 3 : 3 + n_chi] = chi_exists_np[:, :n_chi]
 
+    # Pad angle_exists to match AR model's num_residues (extra slots = ligand rotatable bonds).
+    # NEW LAYOUT: each ligand rotatable dihedral occupies its OWN row in angle_exists,
+    # with only angle index 0 valid (others masked off).
+    if num_residues > env_ref.n_residues:
+        n_extra = num_residues - env_ref.n_residues
+        lig_mask = np.zeros((n_extra, n_angles), dtype=bool)
+        # Prefer SMILES-based RDKit detection.
+        _lig_smiles = str(getattr(args, "ligand_smiles", "") or "")
+        if _lig_smiles:
+            from gespo.utils.geometry import find_ligand_rotatable_dihedrals_smiles
+            try:
+                lig_dihedrals = find_ligand_rotatable_dihedrals_smiles(env_ref.md_topology, _lig_smiles)
+            except Exception:
+                from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+                lig_dihedrals = find_ligand_rotatable_dihedrals(env_ref.md_topology)
+        else:
+            from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+            lig_dihedrals = find_ligand_rotatable_dihedrals(env_ref.md_topology)
+        # One position per dihedral; angle 0 is valid at each ligand position.
+        n_lig_positions = min(len(lig_dihedrals), n_extra)
+        for pos_idx in range(n_lig_positions):
+            lig_mask[pos_idx, 0] = True
+        angle_exists_np = np.concatenate([angle_exists_np, lig_mask], axis=0)
+
     angle_mask_1d = torch.from_numpy(angle_exists_np.astype(bool)).to(torch_device)
     angle_mask_batch = angle_mask_1d.unsqueeze(0).expand(config.grp_size, -1, -1)
     torsion_embed_indices = [0, 1] + ([i for i in range(3, int(n_angles))] if int(n_angles) > 3 else [])
@@ -471,6 +592,10 @@ def train(args: argparse.Namespace) -> None:
     # but EXCLUDE from VAMP training / LOO-VAMP reward scoring.
     # Use case: pretrain trajectories with different time spacing.
     all_epoch_vamp_exclude: List[bool] = []
+    # Per-epoch flag: True = include in VAMP training but EXCLUDE from retrieval pool.
+    # Use case: unfiltered prior-round data for better VAMP CVs without polluting
+    # retrieval with dissociated/unbound starting frames.
+    all_epoch_retrieval_exclude: List[bool] = []
     ep_start = 0
     pca_state = None
 
@@ -542,6 +667,65 @@ def train(args: argparse.Namespace) -> None:
         adk_token_idx = None
         ppi_token_idx = None
 
+    # Auto-detect pocket indices for pocket_rmsd / n_contacts global tokens.
+    _pocket_ca_local: Optional[np.ndarray] = None
+    _pocket_ref_ca_nm: Optional[np.ndarray] = None
+    _prot_heavy_local: Optional[np.ndarray] = None
+    _lig_heavy_local: Optional[np.ndarray] = None
+    print(f"[POCKET_DEBUG] global_token_names={global_token_names}, checking pocket condition...", flush=True)
+    if any(n in ("pocket_rmsd_nm", "n_contacts_scaled", "n_contacts", "lig_pocket_dist_nm") for n in (global_token_names or [])):
+        print(f"[Pocket] Pocket globals requested. Detecting pocket residues...", flush=True)
+        try:
+            import mdtraj as _md_pocket
+            _POCKET_NM = 0.5
+            _LIG_NAMES = {"UNK", "BEN", "LIG"}
+            _AA_P = {"ALA","ARG","ASN","ASP","CYS","CYX","GLN","GLU","GLY","HIS","HID","HIE","HIP",
+                     "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP","TYR","VAL","ACE","NME"}
+            # Prefer an explicit pocket reference PDB (e.g. holo structure when running apo GESPO),
+            # then fall back to simulation_topology.pdb, then to the main --pdb.
+            _pocket_ref = str(getattr(config, "pocket_ref_pdb", "") or "")
+            if _pocket_ref and os.path.isfile(_pocket_ref):
+                _sim_top_path = _pocket_ref
+                print(f"[Pocket] Using pocket_ref_pdb: {_sim_top_path}", flush=True)
+            else:
+                _sim_top_path = os.path.join(str(getattr(config, "snapshot_dir", "")), "simulation_topology.pdb")
+                if not os.path.isfile(_sim_top_path):
+                    _sim_top_path = str(getattr(config, "pdb", ""))
+            _ref_traj = _md_pocket.load(_sim_top_path)
+            ref_xyz = _ref_traj.xyz[0]
+            # Identify ligand and protein residues in full topology
+            _full_prot_res = [r for r in _ref_traj.topology.residues if r.name.upper() in _AA_P]
+            _lig_heavy_full = np.array([a.index for a in _ref_traj.topology.atoms
+                                        if a.residue.name in _LIG_NAMES and a.element.symbol != "H"], dtype=np.int64)
+            print(f"[Pocket] {_lig_heavy_full.size} lig heavy, {len(_full_prot_res)} prot res, "
+                  f"retrieval_ca_local.size={retrieval_ca_local.size}", flush=True)
+            if _lig_heavy_full.size > 0 and retrieval_ca_local.size > 0:
+                ref_lig = ref_xyz[_lig_heavy_full]
+                pocket_res_mask = np.zeros(len(_full_prot_res), dtype=bool)
+                for ri, r in enumerate(_full_prot_res):
+                    r_h = [a.index for a in r.atoms if a.element.symbol != "H"]
+                    if not r_h: continue
+                    d = np.min(np.linalg.norm(ref_xyz[r_h][:, None, :] - ref_lig[None, :, :], axis=-1))
+                    if d < _POCKET_NM:
+                        pocket_res_mask[ri] = True
+                # Map to protein-only CA frame: retrieval_ca_local[i] is the i-th CA
+                # pocket_res_mask[i] is True if the i-th protein residue is in the pocket
+                n_ca = min(len(pocket_res_mask), retrieval_ca_local.size, retrieval_ref_ca_nm.shape[0])
+                pocket_mask_ca = pocket_res_mask[:n_ca]
+                if pocket_mask_ca.any():
+                    _pocket_ca_local = retrieval_ca_local[pocket_mask_ca].copy()
+                    _pocket_ref_ca_nm = retrieval_ref_ca_nm[pocket_mask_ca].copy()
+                    print(f"[Pocket] Auto-detected {int(pocket_mask_ca.sum())} pocket CA "
+                          f"(residues {list(np.where(pocket_mask_ca)[0][:5])}...) in protein-only frame", flush=True)
+                else:
+                    print(f"[Pocket] Warning: no pocket residues found within {_POCKET_NM*10:.0f}Å", flush=True)
+            else:
+                print(f"[Pocket] Warning: no ligand atoms or empty ca_local", flush=True)
+        except Exception as exc_pk:
+            import traceback
+            print(f"[Pocket] Warning: auto-detection failed ({exc_pk})", flush=True)
+            traceback.print_exc()
+
     def _compute_globals_from_coords(coords_list: List[np.ndarray]) -> np.ndarray:
         return _compute_globals_impl(
             coords_list,
@@ -551,6 +735,10 @@ def train(args: argparse.Namespace) -> None:
             ref_ca_nm=retrieval_ref_ca_nm,
             adk_token_indices=adk_token_idx,
             ppi_token_indices=ppi_token_idx,
+            pocket_ca_local=_pocket_ca_local,
+            pocket_ref_ca_nm=_pocket_ref_ca_nm,
+            prot_heavy_local=_prot_heavy_local,
+            lig_heavy_local=_lig_heavy_local,
         )
 
     # LOO-VAMP Rewards Manager
@@ -569,6 +757,12 @@ def train(args: argparse.Namespace) -> None:
 
     # MSM information-gain exploration bonus manager.
     msm_ig_mgr = MSMIGBonus()
+
+    # Start-distance (PCCA macrostate-centroid) reward manager
+    from gespo.rewards.frontier import StartDistanceReward
+    start_dist_mgr = StartDistanceReward(
+        n_macrostates=int(getattr(config, "pcca_n_macrostates", 7) or 7),
+    )
 
 
     def _invalidate_vamp_bin_stats(tag: str) -> None:
@@ -646,6 +840,38 @@ def train(args: argparse.Namespace) -> None:
             geom2vec_state_permutation_map=geom2vec_state_permutation_map,
             iter_history_trajs=_iter_history_trajs,
         )
+        # Fit PCCA macrostates on the MSM-IG k-means + transition matrix.
+        # Used only for the per-trajectory start-distance reward (no masking).
+        try:
+            if (
+                float(getattr(config, "start_distance_reward_coef", 0.0) or 0.0) > 0
+                and msm_ig_mgr.kmeans is not None
+                and getattr(msm_ig_mgr, "counts", None) is not None
+            ):
+                centroids = np.asarray(msm_ig_mgr.kmeans.cluster_centers_, dtype=np.float32)
+                trans = np.asarray(msm_ig_mgr.counts, dtype=np.float64)
+                if trans.shape[0] == centroids.shape[0] and trans.shape[0] >= 4:
+                    ok = start_dist_mgr.fit(centroids, trans)
+                    n_macro = start_dist_mgr.n_macrostates if ok else 0
+                    print(
+                        f"[StartDistance] PCCA refit: K={centroids.shape[0]} macrostates={n_macro} "
+                        f"success={ok}",
+                        flush=True,
+                    )
+                    # Diagnostic: macrostate visit counts (informational only — no masking).
+                    if ok and start_dist_mgr.M is not None:
+                        try:
+                            mss_visits_micro = np.asarray(msm_ig_mgr.counts, dtype=np.float64).sum(axis=1)
+                            macro_visits = (mss_visits_micro[:, None] * start_dist_mgr.M).sum(axis=0)
+                            macro_visits = macro_visits.astype(np.int64, copy=False)
+                            print(
+                                f"[StartDistance] Macrostate visits (info): {macro_visits.tolist()}",
+                                flush=True,
+                            )
+                        except Exception as _exc_vis:
+                            print(f"[StartDistance] Warning: visit-count diagnostic failed: {_exc_vis}", flush=True)
+        except Exception as _exc_pcca:
+            print(f"[StartDistance] PCCA refit failed: {_exc_pcca}", flush=True)
 
     def _ensure_loo_vamp_history_stats(
         *,
@@ -693,8 +919,20 @@ def train(args: argparse.Namespace) -> None:
         old_len = len(retrieval_mgr.cv)
         new_cv = [np.asarray(item[0], dtype=np.float32) for item in epoch_data]
         new_coords = [np.asarray(item[1], dtype=np.float32) for item in epoch_data]
+        # Extract ligand torsions from 5-tuple form (cv, coords, energy, bias, lig_tors).
+        # Older 4-tuple form (cv, coords, energy, bias) gets empty arrays.
+        new_lig_torsions = []
+        for item in epoch_data:
+            if len(item) >= 5 and item[4] is not None:
+                try:
+                    new_lig_torsions.append(np.asarray(item[4], dtype=np.float32).reshape(-1))
+                except Exception:
+                    new_lig_torsions.append(np.zeros((0,), dtype=np.float32))
+            else:
+                new_lig_torsions.append(np.zeros((0,), dtype=np.float32))
         retrieval_mgr.cv.extend(new_cv)
         retrieval_mgr.coords.extend(new_coords)
+        retrieval_mgr.lig_torsions.extend(new_lig_torsions)
         try:
             glob_arr = _compute_globals_from_coords(new_coords)
             if glob_arr.shape[0] != len(new_coords):
@@ -874,6 +1112,8 @@ def train(args: argparse.Namespace) -> None:
             return
 
         for epoch_idx, epoch_data in enumerate(all_epoch_data):
+            if epoch_idx < len(all_epoch_retrieval_exclude) and all_epoch_retrieval_exclude[epoch_idx]:
+                continue
             traj_lens = all_trajectory_lengths[epoch_idx] if epoch_idx < len(all_trajectory_lengths) else []
             traj_paths = all_epoch_traj_dcd_paths[epoch_idx] if epoch_idx < len(all_epoch_traj_dcd_paths) else []
             traj_frame_idx = (
@@ -1023,12 +1263,14 @@ def train(args: argparse.Namespace) -> None:
     if config.resume and ckpt_data:
         ep_start, _, pca_state = ckpt_manager.restore_states(agent, agent_old, policy_opts, ckpt_data, torch_device)
         imported_frames, imported_lens = ckpt_manager.bootstrap_history_from_dcd(
-            all_epoch_data, env_ref, base_dir=config.snapshot_dir or "."
+            all_epoch_data, env_ref, base_dir=config.snapshot_dir or ".",
+            ligand_smiles=str(getattr(config, "ligand_smiles", "") or ""),
         )
         if imported_frames > 0:
             print(f"[Resume] Rebuilt history from {imported_frames} frames (DCD).")
             all_trajectory_lengths.append(imported_lens)
             all_epoch_vamp_exclude.append(False)
+            all_epoch_retrieval_exclude.append(False)
             traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
             if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
                 all_epoch_traj_dcd_paths.append([str(p) for p in traj_paths])
@@ -1050,13 +1292,18 @@ def train(args: argparse.Namespace) -> None:
                     all_epoch_traj_dcd_paths.append([None] * len(lens))
                     all_epoch_traj_dcd_frame_indices.append([None] * len(lens))
                     all_epoch_vamp_exclude.append(False)
+                    all_epoch_retrieval_exclude.append(False)
 
     # Bootstrap history from external DCDs if provided.
     if getattr(config, "history_dcd_dir", ""):
-        imported, imported_lens = ckpt_manager.bootstrap_history_from_dcd(all_epoch_data, env_ref, base_dir=config.history_dcd_dir)
+        imported, imported_lens = ckpt_manager.bootstrap_history_from_dcd(
+            all_epoch_data, env_ref, base_dir=config.history_dcd_dir,
+            ligand_smiles=str(getattr(config, "ligand_smiles", "") or ""),
+        )
         if imported > 0:
             all_trajectory_lengths.append(imported_lens)
-            all_epoch_vamp_exclude.append(False)  # normal history: include in VAMP
+            all_epoch_vamp_exclude.append(False)  # history-dcd-dir: unbiased prior-round data, include in VAMP
+            all_epoch_retrieval_exclude.append(False)
             traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
             if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
                 all_epoch_traj_dcd_paths.append([str(p) for p in traj_paths])
@@ -1079,11 +1326,13 @@ def train(args: argparse.Namespace) -> None:
     if getattr(config, "replay_only_dcd_dir", ""):
         print("[Replay-Only History] Loading pretrain trajs for replay pool (VAMP-excluded)...")
         imported, imported_lens = ckpt_manager.bootstrap_history_from_dcd(
-            all_epoch_data, env_ref, base_dir=config.replay_only_dcd_dir
+            all_epoch_data, env_ref, base_dir=config.replay_only_dcd_dir,
+            ligand_smiles=str(getattr(config, "ligand_smiles", "") or ""),
         )
         if imported > 0:
             all_trajectory_lengths.append(imported_lens)
             all_epoch_vamp_exclude.append(True)  # quarantine: exclude from VAMP
+            all_epoch_retrieval_exclude.append(False)
             traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
             if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
                 all_epoch_traj_dcd_paths.append([str(p) for p in traj_paths])
@@ -1097,6 +1346,33 @@ def train(args: argparse.Namespace) -> None:
             else:
                 all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
             print(f"[Replay-Only History] Imported {imported} frames (VAMP-excluded).")
+
+    # Bootstrap VAMP-only history: included in VAMP training but excluded from retrieval pool.
+    # Use case: unfiltered prior-round trajectories for richer CV coverage, while keeping
+    # the retrieval pool restricted to bound/valid starting frames.
+    if getattr(config, "vamp_dcd_dir", ""):
+        print("[VAMP-Only History] Loading trajs for VAMP training (retrieval-excluded)...")
+        imported, imported_lens = ckpt_manager.bootstrap_history_from_dcd(
+            all_epoch_data, env_ref, base_dir=config.vamp_dcd_dir,
+            ligand_smiles=str(getattr(config, "ligand_smiles", "") or ""),
+        )
+        if imported > 0:
+            all_trajectory_lengths.append(imported_lens)
+            all_epoch_vamp_exclude.append(False)   # included in VAMP
+            all_epoch_retrieval_exclude.append(True)  # excluded from retrieval pool
+            traj_paths = getattr(ckpt_manager, "last_bootstrap_dcd_paths", None)
+            if isinstance(traj_paths, list) and len(traj_paths) == len(imported_lens):
+                all_epoch_traj_dcd_paths.append([str(p) for p in traj_paths])
+            else:
+                all_epoch_traj_dcd_paths.append([None] * len(imported_lens))
+            traj_frame_idx = getattr(ckpt_manager, "last_bootstrap_frame_indices", None)
+            if isinstance(traj_frame_idx, list) and len(traj_frame_idx) == len(imported_lens):
+                all_epoch_traj_dcd_frame_indices.append(
+                    [np.asarray(x, dtype=np.int64) if x is not None else None for x in traj_frame_idx]
+                )
+            else:
+                all_epoch_traj_dcd_frame_indices.append([None] * len(imported_lens))
+            print(f"[VAMP-Only History] Imported {imported} frames (retrieval-excluded).")
 
     # Discrete state dimension (number of VAMP states)
     n_tica_components = int(getattr(config, "geom2vec_dim", 2) or 2)
@@ -1163,6 +1439,28 @@ def train(args: argparse.Namespace) -> None:
         )
 
 
+    # Populate retrieval cache from any bootstrapped history (metad seeds, resumed DCDs).
+    if all_epoch_data and len(retrieval_mgr.cv) == 0:
+        _rebuild_retrieval_cache_from_history(tag="bootstrap")
+        print(f"[Retrieval] Cache rebuilt from history: {len(retrieval_mgr.cv)} frames")
+
+    # Pre-seed retrieval labels from a precomputed file (e.g., VAMP cluster labels).
+    _preseed_path = str(getattr(config, "retrieval_preseed_labels_npz", "") or "")
+    if _preseed_path and os.path.isfile(_preseed_path) and retrieval_mgr.labels is None:
+        try:
+            _preseed = np.load(_preseed_path, allow_pickle=True)
+            _preseed_labels = np.asarray(_preseed["labels"], dtype=np.int64)
+            n_pool = len(retrieval_mgr.cv)
+            if _preseed_labels.shape[0] <= n_pool:
+                pad = np.zeros(n_pool - _preseed_labels.shape[0], dtype=np.int64)
+                retrieval_mgr.labels = np.concatenate([_preseed_labels, pad])
+            else:
+                retrieval_mgr.labels = _preseed_labels[:n_pool]
+            print(f"[Retrieval] Pre-seeded {retrieval_mgr.labels.shape[0]} labels from {_preseed_path} "
+                  f"(unique: {len(np.unique(retrieval_mgr.labels))})", flush=True)
+        except Exception as exc_ps:
+            print(f"[Retrieval] Warning: failed to pre-seed labels ({exc_ps})", flush=True)
+
     for ep in range(ep_start, config.episodes):
         print(f"\n{'='*60}")
         print(f"Starting Epoch {ep+1}/{config.episodes}")
@@ -1177,10 +1475,20 @@ def train(args: argparse.Namespace) -> None:
         else:
             should_update = ((ep + 1) % refresh_interval == 0) or (not model_ready)
 
-        if should_update and all_epoch_data:
+        # Check if there's any VAMP-eligible data (not all replay-only / quarantined).
+        _vamp_eligible_epochs = [
+            i for i in range(len(all_epoch_data))
+            if i >= len(all_epoch_vamp_exclude) or not all_epoch_vamp_exclude[i]
+        ]
+        _has_vamp_data = len(_vamp_eligible_epochs) > 0
+
+        if should_update and all_epoch_data and _has_vamp_data:
             print(f"[Epoch {ep+1}] Refreshing Geom2Vec VAMP lobe...")
             _refresh_geom2vec_vamp(reason=f"epoch {ep+1}")
             model_ready = geom2vec_mgr.is_trained()
+        elif should_update and all_epoch_data and not _has_vamp_data:
+            print(f"[Epoch {ep+1}] Skipping Geom2Vec VAMP refresh: no VAMP-eligible data yet "
+                  f"(all {len(all_epoch_data)} epoch(s) are replay-only / VAMP-excluded)")
 
         # Ensure history-aware LOO stats match the current VAMP lobe before sampling.
         if model_ready:
@@ -1383,6 +1691,8 @@ def train(args: argparse.Namespace) -> None:
         starts: torch.Tensor
         start_cluster_entropy: Optional[float] = None
         start_cluster_bonus: Optional[np.ndarray] = None
+        start_cluster_ids_epoch: Optional[np.ndarray] = None
+        retrieval_labels_epoch: Optional[np.ndarray] = None
 
         if want_retrieval and not have_history:
             print(
@@ -1434,6 +1744,31 @@ def train(args: argparse.Namespace) -> None:
                     chi_residue_idx=(chi_residue_idx if (int(n_angles) > 3 and chi_residue_idx.size) else None),
                     chi_order_idx=(chi_order_idx if (int(n_angles) > 3 and chi_order_idx.size) else None),
                 )
+                # Pad candidate torsions to match AR model num_residues (ligand slots).
+                if cand_tors.shape[1] < num_residues:
+                    _pad = np.zeros((cand_tors.shape[0], num_residues - cand_tors.shape[1], cand_tors.shape[2]), dtype=np.float32)
+                    cand_tors = np.concatenate([cand_tors, _pad], axis=1)
+
+                # Fill ligand torsion positions from cached lig_torsions if available.
+                # NEW LAYOUT: ligand dihedral d goes at row (env.n_residues + d), col 0.
+                if num_residues > int(env_ref.n_residues):
+                    try:
+                        cand_lig = []
+                        any_nonempty = False
+                        for i in cand_idx:
+                            lt = retrieval_mgr.lig_torsions[int(i)] if int(i) < len(retrieval_mgr.lig_torsions) else np.zeros((0,), dtype=np.float32)
+                            lt = np.asarray(lt, dtype=np.float32).reshape(-1)
+                            if lt.size > 0:
+                                any_nonempty = True
+                            cand_lig.append(lt)
+                        if any_nonempty:
+                            n_extra_slots = int(num_residues) - int(env_ref.n_residues)
+                            for ci, lt in enumerate(cand_lig):
+                                n_use = int(min(lt.size, n_extra_slots))
+                                for d in range(n_use):
+                                    cand_tors[ci, int(env_ref.n_residues) + d, 0] = float(lt[d])
+                    except Exception as exc_lig_fill:
+                        print(f"[Retrieval] Warning: ligand torsion fill failed ({exc_lig_fill})")
                 cand_emb = embed_sincos_from_torsions_np(
                     cand_tors,
                     angle_exists_np,
@@ -1487,6 +1822,8 @@ def train(args: argparse.Namespace) -> None:
                 chosen_cv = np.zeros((config.grp_size, env_ref.n_cvs), dtype=np.float32)
                 chosen_coords: List[Any] = []
                 chosen_hist_idx = np.full((config.grp_size,), -1, dtype=np.int64)
+                retrieval_distances_sq = []  # Track L2² torsion distance between AR proposal and retrieved frame
+                retrieval_distances_glob_sq = []  # Track L2² global (RMSD/E2E) distance
                 use_full_replay_coords = bool(getattr(config, "explicit_solvent_replay_full_coords", False)) and bool(
                     getattr(env_ref, "explicit_solvent", False)
                 )
@@ -1541,11 +1878,18 @@ def train(args: argparse.Namespace) -> None:
                                 break
 
                             glob_order = np.argsort(d2_glob)
-                            global_pool = min(int(d2_glob.size), max(int(topk) * 8, 256))
+                            global_pool = min(int(d2_glob.size), int(topk))
                             stage1_pos = glob_order[:global_pool]
                             d2_tors = pairwise_sq_l2(q_tors_emb, cand_emb[stage1_pos])[0]  # [global_pool]
                             d_min_glob = float(d2_glob[glob_order[0]]) if glob_order.size else float("inf")
                             d_min_tors = float(np.min(d2_tors)) if d2_tors.size else float("inf")
+                            # Debug: log AR's proposed globals and stage1 pool composition
+                            if w < 3 or w == config.grp_size - 1:
+                                _q_raw = start_globals[w].detach().cpu().numpy()
+                                _stage1_globs = np.asarray([retrieval_mgr.globals[int(cand_idx[int(p)])] for p in stage1_pos], dtype=np.float32)
+                                print(f"  [Retrieval Debug w{w:02d}] AR globals={_q_raw}, "
+                                      f"stage1 glob range: {_stage1_globs.min(0)} to {_stage1_globs.max(0)}, "
+                                      f"d_min_glob={d_min_glob:.4f}, d_min_tors={d_min_tors:.1f}", flush=True)
 
                             out_of_support = (
                                 (np.isfinite(support_thr_glob) and d_min_glob > float(support_thr_glob))
@@ -1585,6 +1929,8 @@ def train(args: argparse.Namespace) -> None:
                             chosen_hist_idx[w] = hist_i
                             chosen_cv[w] = np.asarray(retrieval_mgr.cv[hist_i], dtype=np.float32)
                             chosen_coords.append(_make_replay_payload(hist_i))
+                            retrieval_distances_sq.append(float(d2_tors[int(pick_local)]))
+                            retrieval_distances_glob_sq.append(float(d2_glob[pos]))
                             accepted = True
                             break
 
@@ -1624,35 +1970,47 @@ def train(args: argparse.Namespace) -> None:
                         topk_d2 = d2[topk_idx]
                         tau = float(np.median(topk_d2) + 1e-6)
                         pick = sample_from_topk(topk_idx, topk_d2, rng=retrieval_mgr.rng, temperature=tau)
-                        hist_i = int(cand_idx[int(pick)])
+                        pick_idx_in_d2 = int(pick)  # pick is index into cand_idx
+                        hist_i = int(cand_idx[pick_idx_in_d2])
                         chosen_hist_idx[w] = hist_i
                         chosen_cv[w] = np.asarray(retrieval_mgr.cv[hist_i], dtype=np.float32)
                         chosen_coords.append(_make_replay_payload(hist_i))
+                        retrieval_distances_sq.append(float(d2[pick_idx_in_d2]))
+                        retrieval_distances_glob_sq.append(float("nan"))  # No globals in this path
                         accepted = True
                         break
 
                     if not accepted:
+                        d2_glob_fallback = None
                         if use_global_retrieval and cand_glob_norm is not None:
                             try:
                                 q_glob = start_globals[w : w + 1].detach().cpu().numpy().astype(np.float32, copy=False)
                                 q_y = np.log1p(np.clip(q_glob, 0.0, None)).astype(np.float32, copy=False)
                                 q_norm = ((q_y - global_norm_mu[None, :]) / global_norm_std[None, :]) * float(global_w)
-                                d2_glob = pairwise_sq_l2(q_norm.astype(np.float32, copy=False), cand_glob_norm)[0]
-                                glob_order = np.argsort(d2_glob)
+                                d2_glob_fallback = pairwise_sq_l2(q_norm.astype(np.float32, copy=False), cand_glob_norm)[0]
+                                glob_order = np.argsort(d2_glob_fallback)
                                 pos = int(glob_order[0]) if glob_order.size else 0
                                 hist_i = int(cand_idx[pos])
                             except Exception:
                                 hist_i = int(cand_idx[0])
+                                pos = 0
                         else:
                             hist_i = int(cand_idx[0])
+                            pos = 0
                         chosen_hist_idx[w] = hist_i
                         chosen_cv[w] = np.asarray(retrieval_mgr.cv[hist_i], dtype=np.float32)
                         chosen_coords.append(_make_replay_payload(hist_i))
+                        # For fallback, use d2 from last resample attempt
+                        retrieval_distances_sq.append(float(d2[pos]) if d2.size > pos else float("nan"))
+                        if d2_glob_fallback is not None and d2_glob_fallback.size > pos:
+                            retrieval_distances_glob_sq.append(float(d2_glob_fallback[pos]))
+                        else:
+                            retrieval_distances_glob_sq.append(float("nan"))
 
                 # Use AR-proposed torsion targets for the CV conditioning; replay coordinates
                 # provide the retrieved frame, and (optionally) targeted MD will steer toward
                 # these CVs/globals.
-                phi_psi = start_torsions[..., :2]
+                phi_psi = start_torsions[:, :env_ref.n_residues, :2]
                 phi_psi_np = phi_psi.detach().cpu().numpy()
                 try:
                     cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)
@@ -1662,10 +2020,28 @@ def train(args: argparse.Namespace) -> None:
                 starts = torch.as_tensor(cv_batch, device=torch_device, dtype=torch.float32)
                 replay_coords = chosen_coords
 
+                # Log retrieval distance statistics (both global and torsion)
+                if retrieval_distances_glob_sq:
+                    valid_glob = [d for d in retrieval_distances_glob_sq if not np.isnan(d)]
+                    if valid_glob:
+                        mean_g = float(np.mean(valid_glob))
+                        max_g = float(np.max(valid_glob))
+                        print(f"[Retrieval - Epoch {ep+1}] Global (RMSD/E2E) L2² dist: "
+                              f"mean={mean_g:.4f}, max={max_g:.4f}, RMS={np.sqrt(mean_g):.4f}")
+                if retrieval_distances_sq:
+                    valid_dists = [d for d in retrieval_distances_sq if not np.isnan(d)]
+                    if valid_dists:
+                        mean_d2 = float(np.mean(valid_dists))
+                        max_d2 = float(np.max(valid_dists))
+                        print(f"[Retrieval - Epoch {ep+1}] Torsion L2² dist (AR → retrieved): "
+                              f"mean={mean_d2:.4f}, max={max_d2:.4f}, RMS={np.sqrt(mean_d2):.4f}")
+
                 # Optional start-cluster entropy bonus (requires labels)
                 try:
                     if labels is not None and chosen_hist_idx.size == config.grp_size:
                         start_cluster_ids = labels[chosen_hist_idx.clip(0, labels.shape[0] - 1)]
+                        start_cluster_ids_epoch = start_cluster_ids.copy()
+                        retrieval_labels_epoch = labels.copy()
                         counts = np.bincount(start_cluster_ids.clip(0, n_clusters - 1), minlength=n_clusters)
                         total = int(counts.sum())
                         if total > 0:
@@ -1683,7 +2059,8 @@ def train(args: argparse.Namespace) -> None:
                 use_retrieval = False
 
         if not use_retrieval:
-            phi_psi = start_torsions[..., :2]
+            # Trim ligand torsion slots: CV mapping only uses protein residues.
+            phi_psi = start_torsions[:, :env_ref.n_residues, :2]
             phi_psi_np = phi_psi.detach().cpu().numpy()
             try:
                 cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)
@@ -1788,8 +2165,17 @@ def train(args: argparse.Namespace) -> None:
             launch_rewards = torch.zeros(config.grp_size, device=torch_device)
         metrics["avg_launch"] = float(launch_rewards.detach().mean().item())
 
+        # Log reset CV MAE: measures |θ_AR - θ_actual| after steering
+        if "reset_cv_mae" in metrics and metrics["reset_cv_mae"]:
+            mae_vals = [float(x) for x in metrics["reset_cv_mae"] if not np.isnan(x)]
+            if mae_vals:
+                print(f"[Reset CV MAE - Epoch {ep+1}] mean={np.mean(mae_vals):.4f}, "
+                      f"max={np.max(mae_vals):.4f}, min={np.min(mae_vals):.4f} "
+                      f"(|AR proposal - actual torsions| after steering, radians)")
+
         all_epoch_data.append(current_epoch_data)
         all_epoch_vamp_exclude.append(False)
+        all_epoch_retrieval_exclude.append(False)
         if "trajectory_lengths" in metrics:
             all_trajectory_lengths.append(metrics["trajectory_lengths"])
         else:
@@ -1802,6 +2188,16 @@ def train(args: argparse.Namespace) -> None:
         all_epoch_traj_dcd_paths.append(traj_dcd_paths)
         traj_dcd_frame_idx = [None] * len(traj_dcd_paths)
         all_epoch_traj_dcd_frame_indices.append(traj_dcd_frame_idx)
+
+        # Log ligand-pocket distance stats for this epoch
+        if config.snapshot_dir and getattr(config, "ligand_smiles", None):
+            _sim_top_for_lig = os.path.join(str(config.snapshot_dir), "simulation_topology.pdb")
+            try:
+                _log_ligand_pocket_stats(
+                    ep + 1, traj_dcd_paths, _sim_top_for_lig,
+                )
+            except Exception as _exc_lig:
+                print(f"[Ligand-Pocket] Warning: logging failed: {_exc_lig}", flush=True)
 
         try:
             epoch_idx_cur = len(all_epoch_data) - 1
@@ -2188,11 +2584,11 @@ def train(args: argparse.Namespace) -> None:
                                         labels = msm_ig_mgr.kmeans.predict(np.asarray(z_norm, dtype=np.float64))  # type: ignore[union-attr]
                                     except Exception:
                                         continue
+                                    counts_i, n_pairs_i = _msm_transition_counts(labels, n_states=K_msm, lag=lag_msm)
                                     try:
                                         uniq_states[i] = int(np.unique(labels).size)
                                     except Exception:
                                         uniq_states[i] = 0
-                                    counts_i, n_pairs_i = _msm_transition_counts(labels, n_states=K_msm, lag=lag_msm)
                                     if int(n_pairs_i) <= 0:
                                         continue
                                     delta_counts_epoch[i] = counts_i
@@ -2312,6 +2708,43 @@ def train(args: argparse.Namespace) -> None:
                 launch_rewards = launch_rewards.to(torch_device)
                 reward_tensors["launch"] = launch_rewards
 
+            # ── Start-distance reward per trajectory ────────────────
+            # Per-walker reward = L2 distance (in normalized linear-VAMP space) from
+            # the first trajectory frame to the nearest PCCA macrostate centroid.
+            # Rewards proposing starts that escape known basins; no MD relaxation
+            # dependence and no hard masking.
+            start_distance_rewards: Optional[np.ndarray] = None
+            if (
+                float(getattr(config, "start_distance_reward_coef", 0.0) or 0.0) > 0
+                and start_dist_mgr.is_ready()
+                and traj_z_lin_best is not None
+                and msm_ig_mgr.mu is not None
+                and msm_ig_mgr.std is not None
+            ):
+                try:
+                    dim_f = int(getattr(config, "msm_ig_dim", 2) or 2)
+                    mu_f = np.asarray(msm_ig_mgr.mu, dtype=np.float32).reshape(-1)[:dim_f]
+                    std_f = np.asarray(msm_ig_mgr.std, dtype=np.float32).reshape(-1)[:dim_f]
+                    std_f = np.where(std_f > 1e-8, std_f, 1.0).astype(np.float32, copy=False)
+
+                    start_distance_rewards = np.zeros(config.grp_size, dtype=np.float32)
+                    for _ti, _zl in enumerate(traj_z_lin_best or []):
+                        if _zl is None or _zl.size == 0 or int(_zl.shape[1]) < int(dim_f):
+                            continue
+                        z_start = np.asarray(_zl[0:1, :dim_f], dtype=np.float32)
+                        z_start_norm = (z_start - mu_f[None, :]) / std_f[None, :]
+                        d = start_dist_mgr.start_distance(z_start_norm)
+                        start_distance_rewards[_ti] = float(d[0]) if d.size > 0 else 0.0
+                    print(
+                        f"[StartDistance - Epoch {ep+1}] mean={float(np.mean(start_distance_rewards)):.4f} "
+                        f"max={float(np.max(start_distance_rewards)):.4f} "
+                        f"per_walker={[round(float(x), 3) for x in start_distance_rewards.tolist()]}",
+                        flush=True,
+                    )
+                except Exception as _exc_sd:
+                    print(f"[StartDistance] Warning: reward computation failed: {_exc_sd}", flush=True)
+                    start_distance_rewards = None
+
             # ── Combine rewards via RewardCombiner ──────────────────
             from gespo.rewards.combiner import RewardCombiner, RewardTerms
 
@@ -2323,6 +2756,7 @@ def train(args: argparse.Namespace) -> None:
                 loo_vamp=loo_vamp_rewards,
                 start_cluster=start_cluster_bonus if start_cluster_bonus is not None else None,
                 vamp_bin=vamp_bin_bonus if vamp_bin_bonus is not None else None,
+                start_distance=start_distance_rewards,
                 msm_ig=msm_ig_rewards if msm_ig_rewards is not None else None,
                 off_action_mae=(
                     np.asarray(metrics.get("reset_cv_mae", [0.0] * config.grp_size), dtype=np.float32)
@@ -2352,6 +2786,21 @@ def train(args: argparse.Namespace) -> None:
             off_action_discount = torch.ones_like(launch_rewards)
             if loo_vamp_rewards is not None:
                 term_loo_vamp = loo_weight * torch.tensor(loo_vamp_rewards, device=torch_device, dtype=torch.float32)
+
+            # Inverse-population weighting: downweight walkers in overrepresented states.
+            if retrieval_labels_epoch is not None and start_cluster_ids_epoch is not None:
+                try:
+                    _gl = retrieval_labels_epoch
+                    _gc = np.bincount(_gl, minlength=int(_gl.max()) + 1).astype(np.float64)
+                    _gp = _gc / max(_gc.sum(), 1)
+                    _pw = np.array([1.0 / max(_gp[int(s)], 0.01)
+                                    for s in start_cluster_ids_epoch[:config.grp_size]], dtype=np.float32)
+                    _pw = _pw / _pw.mean()
+                    combined_rewards = combined_rewards * torch.tensor(_pw, device=torch_device, dtype=torch.float32)
+                    print(f"[Reward] Inverse-population weights: min={_pw.min():.2f} max={_pw.max():.2f} "
+                          f"mean={_pw.mean():.2f}", flush=True)
+                except Exception as exc_pw:
+                    print(f"[Reward] Warning: population weighting failed ({exc_pw})", flush=True)
 
             reward_tensors["launch"] = combined_rewards
             try:

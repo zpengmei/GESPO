@@ -1073,6 +1073,10 @@ def steer_replay_to_targets(
                         parts.append(f"{name}={v:.3f} rad")
             except Exception:
                 pass
+            # Add global bias energy
+            e_global = _steering_energy_kj(sim, STEER_GLOBAL_FORCE_GROUP_ID)
+            if e_global is not None:
+                parts.append(f"GlobalE={e_global:.2f} kJ/mol")
             if parts:
                 print(f"[TargetedMD] After globals: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
 
@@ -1193,6 +1197,10 @@ def steer_replay_to_targets(
                         parts.append(f"{name}={v:.3f} rad")
             except Exception:
                 pass
+            # Add torsion bias energy as a proxy for |θ_current - θ_target|
+            e_torsion = _steering_energy_kj(sim, STEER_TORSION_FORCE_GROUP_ID)
+            if e_torsion is not None:
+                parts.append(f"TorsionE={e_torsion:.2f} kJ/mol")
             if parts:
                 print(f"[TargetedMD] After torsions: {' '.join(parts)}{_stage_diag(sim, forces)}", flush=True)
 

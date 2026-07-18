@@ -89,6 +89,7 @@ from gespo.training.torsion_retrieval import (
     build_residue_torsions_from_cv_and_coords,
     compute_support_threshold,
     embed_sincos_from_torsions_np,
+    match_torsion_residue_count,
     pairwise_sq_l2,
     sample_from_topk,
 )
@@ -249,26 +250,21 @@ def train(args: argparse.Namespace) -> None:
     aa_to_idx = {aa: i for i, aa in enumerate(aa_order)}
     fallback_idx = len(aa_to_idx)
     try:
-        ref_top = md.load(config.pdb).topology
+        ref_full = md.load(config.pdb)
+        try:
+            prot_idx = infer_protein_atom_indices(ref_full.topology, include_caps=True, allow_empty=True)
+            if prot_idx is not None and len(prot_idx) > 0 and len(prot_idx) < int(ref_full.n_atoms):
+                ref_top = ref_full.atom_slice(np.asarray(prot_idx, dtype=np.int64)).topology
+            else:
+                ref_top = ref_full.topology
+        except Exception:
+            ref_top = ref_full.topology
         res_codes = [three_to_one.get(res.name.upper(), "X") for res in ref_top.residues]
         residue_types_1d = np.array([aa_to_idx.get(code, fallback_idx) for code in res_codes], dtype=np.int64)
     except Exception as exc_rt:
         print(f"[TorsionAR] Warning: failed to build residue type map from PDB: {exc_rt}")
         residue_types_1d = np.zeros((env_ref.n_residues,), dtype=np.int64)
-
-    if residue_types_1d.shape[0] != env_ref.n_residues:
-        print(
-            f"[TorsionAR] Warning: residue type length {residue_types_1d.shape[0]} != env.n_residues {env_ref.n_residues}; "
-            "truncating/padding."
-        )
-        if residue_types_1d.shape[0] > env_ref.n_residues:
-            residue_types_1d = residue_types_1d[: env_ref.n_residues]
-        else:
-            pad = np.full((env_ref.n_residues - residue_types_1d.shape[0],), fallback_idx, dtype=np.int64)
-            residue_types_1d = np.concatenate([residue_types_1d, pad], axis=0)
-
-    residue_types_tensor = torch.as_tensor(residue_types_1d, device=torch_device, dtype=torch.long)
-    residue_types_batch = residue_types_tensor.unsqueeze(0).expand(config.grp_size, -1)
+    _pdb_residue_types = residue_types_1d
 
     phi_exists = torch.from_numpy(env_ref._phi_exists.astype(bool)).to(torch_device)
     psi_exists = torch.from_numpy(env_ref._psi_exists.astype(bool)).to(torch_device)
@@ -323,9 +319,14 @@ def train(args: argparse.Namespace) -> None:
                 global_token_names = list(ADK_GLOBAL_TOKEN_NAMES)
             else:
                 global_token_names = [f"global_{i}" for i in range(max(0, n_global_tokens))]
-        if num_residues != env_ref.n_residues:
+        if num_residues < env_ref.n_residues:
             raise RuntimeError(
-                f"TorsionAR checkpoint expects {num_residues} residues but env has {env_ref.n_residues}."
+                f"TorsionAR checkpoint has fewer residues ({num_residues}) than env ({env_ref.n_residues})."
+            )
+        if num_residues > env_ref.n_residues:
+            print(
+                f"[TorsionAR] Model has {num_residues} residues, env has {env_ref.n_residues}; "
+                f"extra {num_residues - env_ref.n_residues} residue(s) are ligand torsion slots."
             )
         agent = TorsionARPolicy(
             num_residues=num_residues,
@@ -380,6 +381,16 @@ def train(args: argparse.Namespace) -> None:
         agent_old.eval()
         global_token_names = []
         print("[TorsionAR] Initialized new policy (no pretrained checkpoint provided)")
+
+    residue_types_1d = _pdb_residue_types
+    if residue_types_1d.shape[0] < num_residues:
+        pad = np.full((num_residues - residue_types_1d.shape[0],), fallback_idx, dtype=np.int64)
+        residue_types_1d = np.concatenate([residue_types_1d, pad], axis=0)
+    elif residue_types_1d.shape[0] > num_residues:
+        residue_types_1d = residue_types_1d[:num_residues]
+
+    residue_types_tensor = torch.as_tensor(residue_types_1d, device=torch_device, dtype=torch.long)
+    residue_types_batch = residue_types_tensor.unsqueeze(0).expand(config.grp_size, -1)
 
     # ------------------------------------------------------------------
     # Angle masks and χ torsion map (policy sampling, retrieval, steering).
@@ -449,6 +460,18 @@ def train(args: argparse.Namespace) -> None:
         angle_exists_np[:, 2] = angle_exists_np[:, 0] & angle_exists_np[:, 1]
     if n_chi > 0 and n_angles > 3:
         angle_exists_np[:, 3 : 3 + n_chi] = chi_exists_np[:, :n_chi]
+
+    if num_residues > env_ref.n_residues:
+        n_extra = num_residues - env_ref.n_residues
+        lig_mask = np.zeros((n_extra, n_angles), dtype=bool)
+        try:
+            from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+            lig_dihedrals = find_ligand_rotatable_dihedrals(env_ref.md_topology)
+        except Exception:
+            lig_dihedrals = []
+        for d_idx in range(min(len(lig_dihedrals), n_angles)):
+            lig_mask[0, d_idx] = True
+        angle_exists_np = np.concatenate([angle_exists_np, lig_mask], axis=0)
 
     angle_mask_1d = torch.from_numpy(angle_exists_np.astype(bool)).to(torch_device)
     angle_mask_batch = angle_mask_1d.unsqueeze(0).expand(config.grp_size, -1, -1)
@@ -2355,6 +2378,7 @@ def train(args: argparse.Namespace) -> None:
                     chi_residue_idx=(chi_residue_idx if (int(n_angles) > 3 and chi_residue_idx.size) else None),
                     chi_order_idx=(chi_order_idx if (int(n_angles) > 3 and chi_order_idx.size) else None),
                 )
+                cand_tors = match_torsion_residue_count(cand_tors, target_n_residues=int(angle_exists_np.shape[0]))
                 cand_emb = embed_sincos_from_torsions_np(
                     cand_tors,
                     angle_exists_np,
@@ -2573,7 +2597,7 @@ def train(args: argparse.Namespace) -> None:
                 # Use AR-proposed torsion targets for the CV conditioning; replay coordinates
                 # provide the retrieved frame, and (optionally) targeted MD will steer toward
                 # these CVs/globals.
-                phi_psi = start_torsions[..., :2]
+                phi_psi = start_torsions[:, :env_ref.n_residues, :2]
                 phi_psi_np = phi_psi.detach().cpu().numpy()
                 try:
                     cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)
@@ -2604,7 +2628,7 @@ def train(args: argparse.Namespace) -> None:
                 use_retrieval = False
 
         if not use_retrieval:
-            phi_psi = start_torsions[..., :2]
+            phi_psi = start_torsions[:, :env_ref.n_residues, :2]
             phi_psi_np = phi_psi.detach().cpu().numpy()
             try:
                 cv_batch = env_ref.residue_batch_to_cv(phi_psi_np)

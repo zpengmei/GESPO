@@ -10,7 +10,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from gespo.training.rl import TorsionARPolicy
-from gespo.training.torsion_retrieval import build_residue_torsions_from_cv_and_coords, embed_sincos_from_torsions_np
+from gespo.training.torsion_retrieval import (
+    build_residue_torsions_from_cv_and_coords,
+    embed_sincos_from_torsions_np,
+    match_torsion_residue_count,
+)
 
 
 def test_torsion_ar_policy_supports_variable_angle_counts():
@@ -54,6 +58,18 @@ def test_embed_sincos_from_torsions_np_masks_angles():
     # res0 angle0: sin=0 cos=1; res0 angle1 masked -> 0; res1 angle0: 0/1; res1 angle1: 0/1
     expected = np.array([0, 1, 0, 0, 0, 1, 0, 1], dtype=np.float32)
     assert np.allclose(emb[0], expected, atol=1e-6)
+
+
+def test_match_torsion_residue_count_pads_ligand_slots():
+    tors = np.ones((2, 3, 4), dtype=np.float32)
+    padded = match_torsion_residue_count(tors, target_n_residues=5)
+    assert padded.shape == (2, 5, 4)
+    assert np.allclose(padded[:, :3, :], tors)
+    assert np.allclose(padded[:, 3:, :], 0.0)
+
+    trimmed = match_torsion_residue_count(padded, target_n_residues=3)
+    assert trimmed.shape == tors.shape
+    assert np.allclose(trimmed, tors)
 
 
 def test_build_residue_torsions_from_cv_and_coords_places_phi_psi():

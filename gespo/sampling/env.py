@@ -147,6 +147,10 @@ class PeptideSampler:
         self.steer_chi_weight = float(getattr(args, "steer_chi_weight", 0.1) or 0.0)
         if not np.isfinite(self.steer_chi_weight) or self.steer_chi_weight < 0.0:
             self.steer_chi_weight = 0.0
+        # Ligand rotatable dihedral steering weight. Default 1.0 (steer ligand to AR-proposed torsion).
+        self.steer_ligand_weight = float(getattr(args, "steer_ligand_weight", 1.0) or 0.0)
+        if not np.isfinite(self.steer_ligand_weight) or self.steer_ligand_weight < 0.0:
+            self.steer_ligand_weight = 0.0
         # Additional global metrics (e.g., ADK distances/hinge angles).
         self.steer_k_dist = float(getattr(args, "steer_k_dist", self.steer_k_e2e) or 0.0)
         self.steer_k_theta = float(getattr(args, "steer_k_theta", self.steer_k_torsion) or 0.0)
@@ -282,6 +286,32 @@ class PeptideSampler:
             self.forcefield = ForceField(ff_protein, ff_water)
             self.ff_args = {'nonbondedMethod': PME, 'constraints': HBonds, 'rigidWater': True}
 
+        # Register GAFF template generator for ligand residues if needed.
+        ligand_smiles = str(getattr(args, "ligand_smiles", "") or "").strip()
+        if not ligand_smiles:
+            # Auto-detect: check if topology has non-protein, non-solvent residues
+            _non_std = {"HOH","WAT","TIP3","NA","CL","K","CA2","NA+","CL-"}
+            _std_aa = {"ALA","ARG","ASN","ASP","CYS","CYX","GLN","GLU","GLY",
+                       "HIS","HID","HIE","HIP","ILE","LEU","LYS","MET","PHE",
+                       "PRO","SER","THR","TRP","TYR","VAL","ACE","NME"}
+            _has_unk = False
+            for _r in self.pdb.topology.residues():
+                if _r.name not in _std_aa and _r.name not in _non_std:
+                    _has_unk = True
+                    break
+            if _has_unk:
+                ligand_smiles = str(getattr(args, "ligand_smiles", "") or "").strip()
+        if ligand_smiles:
+            try:
+                from openmmforcefields.generators import GAFFTemplateGenerator
+                from openff.toolkit import Molecule
+                lig_mol = Molecule.from_smiles(ligand_smiles, allow_undefined_stereo=True)
+                gaff_gen = GAFFTemplateGenerator(molecules=[lig_mol], forcefield="gaff-2.11")
+                self.forcefield.registerTemplateGenerator(gaff_gen.generator)
+                print(f"[INFO] Registered GAFF-2.11 for ligand: {ligand_smiles}")
+            except Exception as _gaff_err:
+                print(f"[WARN] Failed to register GAFF for ligand '{ligand_smiles}': {_gaff_err}")
+
             cutoff_nm = self.nonbonded_cutoff_nm
             switch_nm = self.switch_distance_nm
             use_switch = bool(self.use_switching_function)
@@ -345,17 +375,9 @@ class PeptideSampler:
         # Store the clean topology for later use with different conformers
         self._clean_topology_for_conformers = self.clean_modeller.topology
 
-        # Set heavy atom indices from PDB topology.
-        try:
-            pdb_traj = md.load(self._generator_args['pdb'])
-            heavy_atoms = pdb_traj.topology.select('not element H')
-            self.heavy_atom_indices = heavy_atoms
-            ref_coords_nm = pdb_traj.xyz[0]
-            self.reference_heavy_angstrom = ref_coords_nm[heavy_atoms] * 10.0  # nm -> Angstrom
-        except Exception as e:
-            print(f"[WARN] Could not extract heavy atoms from PDB: {e}")
-            self.heavy_atom_indices = np.array([], dtype=np.int64)
-            self.reference_heavy_angstrom = np.array([]).reshape(0, 3).astype(np.float32)
+        # Heavy atom indices are computed after system creation (below) to match
+        # the actual simulation particle count, which may differ from the PDB
+        # if ions were stripped/re-added or waters deleted.
 
         modeller = Modeller(self.pdb.topology, self.pdb.positions)
         if self.explicit_solvent and not use_snapshot_topology:
@@ -378,7 +400,60 @@ class PeptideSampler:
                 print(f"[INFO] Explicit-solvent topology: n_atoms={n_atoms}, n_waters={int(n_waters)}", flush=True)
             except Exception:
                 pass
+        # Strip unparameterized ions (e.g. CA2 for Ca²⁺) before createSystem,
+        # then add them back with manual nonbonded parameters.
+        _ion_residues = [r for r in modeller.topology.residues() if r.name == "CA2"]
+        _ion_positions = {}
+        if _ion_residues:
+            from openmm.app import Element as _Elem
+            from openmm import NonbondedForce as _NBF
+            for _ir in _ion_residues:
+                for _ia in _ir.atoms():
+                    _ion_positions[_ir.name] = modeller.positions[_ia.index]
+            modeller.delete(_ion_residues)
+            print(f"[INFO] Stripped {len(_ion_residues)} ion residue(s) for parameterization")
+
         system = self.forcefield.createSystem(modeller.topology, **self.ff_args)
+
+        # Re-add stripped ions with AMBER parameters
+        if _ion_positions:
+            from openmm.app import Element as _Elem
+            from openmm import NonbondedForce as _NBF
+            _ion_params = {
+                "CA2": (2.0, 0.2412, 0.459789),  # charge(e), sigma(nm), epsilon(kJ/mol)
+            }
+            for _iname, _ipos in _ion_positions.items():
+                _q, _sig, _eps = _ion_params.get(_iname, (0.0, 0.3, 0.0))
+                system.addParticle(40.078 if _iname == "CA2" else 1.0)
+                for _f in system.getForces():
+                    if isinstance(_f, _NBF):
+                        from openmm.unit import elementary_charge as _ec
+                        _f.addParticle(
+                            _q * _ec, _sig * nanometer, _eps * kilojoule_per_mole,
+                        )
+                        break
+                _chain = modeller.topology.addChain()
+                _res = modeller.topology.addResidue(_iname, _chain)
+                modeller.topology.addAtom("CA", _Elem.getBySymbol("Ca"), _res)
+                _new_pos = list(modeller.positions)
+                _new_pos.append(_ipos)
+                modeller.positions = _new_pos
+            print(f"[INFO] Re-added {len(_ion_positions)} ion(s) with manual parameters")
+
+        # Compute heavy atom indices from the actual simulation topology.
+        try:
+            _sim_md_top = md.Topology.from_openmm(modeller.topology)
+            heavy_atoms = _sim_md_top.select("not element H")
+            self.heavy_atom_indices = heavy_atoms
+            _pos_nm = np.array(
+                [[p.x, p.y, p.z] for p in modeller.positions.value_in_unit(nanometer)],
+                dtype=np.float32,
+            )
+            self.reference_heavy_angstrom = _pos_nm[heavy_atoms] * 10.0
+        except Exception as _ha_err:
+            print(f"[WARN] Could not extract heavy atoms from simulation topology: {_ha_err}")
+            self.heavy_atom_indices = np.array([], dtype=np.int64)
+            self.reference_heavy_angstrom = np.array([]).reshape(0, 3).astype(np.float32)
 
         # Explicit solvent: enforce PME grid spacing and ensure long-range dispersion correction.
         if self.explicit_solvent:
@@ -440,6 +515,52 @@ class PeptideSampler:
         if self.use_barostat and (not self.implicit_solvent):
             system.addForce(MonteCarloBarostat(self.pressure_bar * bar, self.temperature * kelvin, self.barostat_frequency))
 
+        # Flat-bottom ligand-pocket distance restraint (optional).
+        _lig_pocket_restraint = bool(getattr(args, "ligand_pocket_restraint", False))
+        if _lig_pocket_restraint:
+            try:
+                _lig_r0_nm = float(getattr(args, "ligand_pocket_restraint_radius_nm", 0.6))
+                _lig_k = float(getattr(args, "ligand_pocket_restraint_k", 1000.0))
+                _lig_seq_pos = int(getattr(args, "ligand_pocket_seq_pos", 170))
+                _LIG_NAMES_R = {"UNK", "BEN", "LIG"}
+
+                _md_top_r = md.Topology.from_openmm(modeller.topology)
+                _prot_res_r = [r for r in _md_top_r.residues if r.is_protein]
+
+                _lig_heavy_r = [a.index for a in _md_top_r.atoms
+                                if a.residue.name in _LIG_NAMES_R and a.element.symbol != "H"]
+                _pocket_resseq_r = _prot_res_r[_lig_seq_pos].resSeq if _lig_seq_pos < len(_prot_res_r) else None
+                _pocket_heavy_r = [a.index for a in _md_top_r.atoms
+                                   if _pocket_resseq_r is not None
+                                   and a.residue.resSeq == _pocket_resseq_r
+                                   and a.element.symbol != "H"] if _pocket_resseq_r else []
+
+                if _lig_heavy_r and _pocket_heavy_r:
+                    from openmm import CustomCentroidBondForce
+                    _fb_force = CustomCentroidBondForce(
+                        2, "steer_lambda_lig * step(distance(g1,g2)-r0) * 0.5 * k * (distance(g1,g2)-r0)^2"
+                    )
+                    _fb_force.addGlobalParameter("steer_lambda_lig", 1.0)
+                    _fb_force.addGlobalParameter("r0", _lig_r0_nm)
+                    _fb_force.addGlobalParameter("k", _lig_k)
+                    _g1 = _fb_force.addGroup(_lig_heavy_r)
+                    _g2 = _fb_force.addGroup(_pocket_heavy_r)
+                    _fb_force.addBond([_g1, _g2])
+                    _fb_force.setUsesPeriodicBoundaryConditions(True)
+                    system.addForce(_fb_force)
+                    self._lig_restraint_lambda_name = "steer_lambda_lig"
+                    print(
+                        f"[Ligand Restraint] Flat-bottom COM restraint (lambda-toggled): "
+                        f"lig({len(_lig_heavy_r)} atoms) ↔ pocket({len(_pocket_heavy_r)} atoms, "
+                        f"resSeq={_pocket_resseq_r}), r0={_lig_r0_nm:.2f} nm, k={_lig_k:.0f} kJ/mol/nm²",
+                        flush=True,
+                    )
+                else:
+                    print(f"[Ligand Restraint] Warning: could not find ligand ({len(_lig_heavy_r)}) "
+                          f"or pocket ({len(_pocket_heavy_r)}) atoms; restraint NOT added.", flush=True)
+            except Exception as _exc_lig_r:
+                print(f"[Ligand Restraint] Warning: failed to add restraint: {_exc_lig_r}", flush=True)
+
         # Reference positions (nm) used for steering (and for explicit-solvent full-coordinate replay baseline).
         try:
             init_pos_nm = np.array(modeller.getPositions().value_in_unit(nanometer), dtype=np.float32)
@@ -460,6 +581,30 @@ class PeptideSampler:
         except Exception:
             self._steer_chi_definitions = []
         self._steer_cv_definitions = list(self.cv_definitions) + list(self._steer_chi_definitions)
+
+        # Add ligand rotatable bond dihedrals to steering CVs.
+        # Prefer SMILES-based RDKit detection when ligand_smiles is available
+        # (gives all RDKit-standard rotatable bonds; allows H as 4th atom).
+        # Fall back to legacy heavy-atom-only detection if no SMILES.
+        _lig_smiles = str(getattr(args, "ligand_smiles", "") or "")
+        if _lig_smiles:
+            from gespo.utils.geometry import find_ligand_rotatable_dihedrals_smiles
+            try:
+                self._steer_ligand_definitions = find_ligand_rotatable_dihedrals_smiles(
+                    self.md_topology, _lig_smiles
+                )
+            except Exception as _exc_lig:
+                print(f"[Env] Warning: SMILES rotatable bond detection failed ({_exc_lig}); falling back to heavy-atom-only.")
+                from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+                self._steer_ligand_definitions = find_ligand_rotatable_dihedrals(self.md_topology)
+        else:
+            from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+            self._steer_ligand_definitions = find_ligand_rotatable_dihedrals(self.md_topology)
+        if self._steer_ligand_definitions:
+            self._steer_cv_definitions = self._steer_cv_definitions + list(self._steer_ligand_definitions)
+            print(f"[Env] Added {len(self._steer_ligand_definitions)} ligand rotatable dihedral(s) to steering CVs")
+            for _lbl, _atms in self._steer_ligand_definitions:
+                print(f"  [Env]   {_lbl}: atoms {_atms}")
 
         # Cached targeted-MD steering forces for replay resets (optional).
         # Pre-install these forces into `system` before context creation to avoid CUDA stalls
@@ -829,8 +974,11 @@ class PeptideSampler:
                         e2e_atoms=e2e_pair,
                         cv_definitions=getattr(self, "_steer_cv_definitions", self.cv_definitions),
                         cv_targets_rad=[0.0] * int(len(getattr(self, "_steer_cv_definitions", self.cv_definitions))),
+                        # Placeholder weights at preinstall; per-reset _update_replay_steering_torsion_targets
+                        # overrides these with the correct chi/ligand weights from steer_weights.
                         cv_weights=([1.0] * int(len(self.cv_definitions)))
-                        + ([0.0] * int(len(getattr(self, "_steer_chi_definitions", [])))),
+                        + ([0.0] * int(len(getattr(self, "_steer_chi_definitions", []))))
+                        + ([1.0] * int(len(getattr(self, "_steer_ligand_definitions", [])))),
                         k_rmsd=float(k_rmsd),
                         k_e2e=float(self.steer_k_e2e),
                         k_torsion=float(self.steer_k_torsion),
@@ -1327,6 +1475,13 @@ class PeptideSampler:
            - Uses the conditional diffusion/flow model to generate a new conformation.
            - Full minimization and heating to relax generator artifacts.
         """
+        # Turn ON ligand-pocket restraint during steering/reset.
+        if hasattr(self, '_lig_restraint_lambda_name'):
+            try:
+                self.sim.context.setParameter(self._lig_restraint_lambda_name, 1.0)
+            except Exception:
+                pass
+
         cv_targets_arr = np.asarray(cv_targets, dtype=np.float32)
         phi_angles, psi_angles = cv_targets_to_phi_psi(cv_targets_arr, self.cv_definitions)
         phi_angles = round_and_wrap_angles(phi_angles, self.torsion_round_decimals)
@@ -1361,27 +1516,49 @@ class PeptideSampler:
                 torsion_targets_res = None
 
         if torsion_targets_res is not None and torsion_targets_res.ndim == 2 and len(steer_defs) > steer_backbone_len:
+            n_chi_defs = int(len(getattr(self, "_steer_chi_definitions", [])))
+            n_lig_defs = int(len(getattr(self, "_steer_ligand_definitions", [])))
+            lig_start = int(steer_backbone_len) + n_chi_defs  # start index of ligand entries in steer_defs
+
             for j in range(int(steer_backbone_len), int(len(steer_defs))):
                 name, _atoms = steer_defs[j]
                 name_s = str(name)
-                if not name_s.startswith("chi"):
-                    continue
-                try:
-                    kind, rid_s = name_s.split("_", 1)
-                    chi_k = int(kind[3:])
-                    rid = int(rid_s)
-                    slot = self._residue_index_map.get(rid, None)
-                    if slot is None:
+                # ── Sidechain χ (existing) ──
+                if name_s.startswith("chi"):
+                    try:
+                        kind, rid_s = name_s.split("_", 1)
+                        chi_k = int(kind[3:])
+                        rid = int(rid_s)
+                        slot = self._residue_index_map.get(rid, None)
+                        if slot is None:
+                            continue
+                        angle_idx = 2 + int(chi_k)  # [phi,psi,omega,chi1,...]
+                        if int(slot) < 0 or int(slot) >= int(torsion_targets_res.shape[0]):
+                            continue
+                        if int(angle_idx) < 0 or int(angle_idx) >= int(torsion_targets_res.shape[1]):
+                            continue
+                        steer_targets_rad[j] = float(torsion_targets_res[int(slot), int(angle_idx)])
+                        steer_weights[j] = float(getattr(self, "steer_chi_weight", 1.0) or 0.0)
+                    except Exception:
                         continue
-                    angle_idx = 2 + int(chi_k)  # [phi,psi,omega,chi1,...]
-                    if int(slot) < 0 or int(slot) >= int(torsion_targets_res.shape[0]):
+                # ── Ligand rotatable dihedrals ──
+                # NEW LAYOUT: AR uses ONE position per rotatable bond. The d-th ligand
+                # dihedral is stored at row (n_residues + d), column 0 (phi-like slot).
+                # Steering definitions for ligand are appended after backbone+chi in
+                # _steer_cv_definitions in the same order produced by find_ligand_*.
+                elif n_lig_defs > 0 and j >= lig_start and j < lig_start + n_lig_defs:
+                    try:
+                        lig_dihedral_idx = int(j - lig_start)  # 0-based index of this ligand dihedral
+                        lig_slot = int(self.n_residues) + lig_dihedral_idx  # AR row for this dihedral
+                        if lig_slot < 0 or lig_slot >= int(torsion_targets_res.shape[0]):
+                            continue
+                        angle_col = 0  # phi-like slot
+                        if angle_col < 0 or angle_col >= int(torsion_targets_res.shape[1]):
+                            continue
+                        steer_targets_rad[j] = float(torsion_targets_res[lig_slot, angle_col])
+                        steer_weights[j] = float(getattr(self, "steer_ligand_weight", 1.0) or 0.0)
+                    except Exception:
                         continue
-                    if int(angle_idx) < 0 or int(angle_idx) >= int(torsion_targets_res.shape[1]):
-                        continue
-                    steer_targets_rad[j] = float(torsion_targets_res[int(slot), int(angle_idx)])
-                    steer_weights[j] = float(getattr(self, "steer_chi_weight", 1.0) or 0.0)
-                except Exception:
-                    continue
         self.last_generation_record = None
         self.reset_failed = False
         self.last_reset_error = None
@@ -2137,6 +2314,22 @@ class PeptideSampler:
                 # Targeted MD steering (replay resets): match globals (RMSD/E2E/extra) first,
                 # then torsions, and finally release. Supported for implicit solvent and
                 # explicit-solvent full-coordinate replay mode.
+                #
+                # Pre-steering minimize: relax replay positions before applying steering forces.
+                # High-T frames (400-450 K) placed into a 298 K context can have clashing
+                # water/protein geometry that causes NaN in the very first steering step.
+                # steer_refine_minimize_iters is re-used here as the pre-steering budget.
+                if replay_steer_forces is not None and self.steer_refine_minimize_iters > 0:
+                    _pre_min_iters = int(self.steer_refine_minimize_iters)
+                    try:
+                        if self.steer_replay_verbose:
+                            print(f"[TargetedMD] Pre-steering minimize ({_pre_min_iters} iters)...", flush=True)
+                        self.sim.minimizeEnergy(maxIterations=_pre_min_iters)
+                        if self.steer_replay_verbose:
+                            print("[TargetedMD] Pre-steering minimize done.", flush=True)
+                    except Exception as _exc_pre_min:
+                        if self.steer_replay_verbose:
+                            print(f"[TargetedMD] Pre-steering minimize failed ({_exc_pre_min}); proceeding.", flush=True)
                 if replay_steer_forces is not None:
                     if not self.steer_replay_verbose:
                         print("[TargetedMD] Steering start (set --steer-replay-verbose for diagnostics).", flush=True)
@@ -2429,6 +2622,13 @@ class PeptideSampler:
         equilibration_steps: int = 5000,
         write_full_dcd: Optional[bool] = None,
     ) -> Tuple[List[Tuple[np.ndarray, np.ndarray, float, float]], bool, Optional[Path]]:
+        # Turn OFF ligand-pocket restraint during production rollout (unbiased dynamics).
+        if hasattr(self, '_lig_restraint_lambda_name'):
+            try:
+                self.sim.context.setParameter(self._lig_restraint_lambda_name, 0.0)
+            except Exception:
+                pass
+
         if self.use_bias and self.bias is not None:
             bias_E = self.sim.context.getState(getEnergy=True, groups={BIAS_GROUP_ID}).getPotentialEnergy()
             kBT = (MOLAR_GAS_CONSTANT_R * (self.temperature * kelvin)).value_in_unit(kilojoule_per_mole)
@@ -2571,7 +2771,20 @@ class PeptideSampler:
                         bias_energy = 0.0
 
                 frames_nm.append(coords_nm if write_full_dcd else protein_coords)
-                traj_data.append((self.cv_values.copy(), protein_coords.copy(), float(energy), float(bias_energy)))
+
+                # Compute ligand rotatable torsions for this frame (from full-system coords).
+                lig_tors_frame = np.zeros((0,), dtype=np.float32)
+                _lig_defs = getattr(self, "_steer_ligand_definitions", None)
+                if _lig_defs:
+                    try:
+                        _vals = np.empty((len(_lig_defs),), dtype=np.float32)
+                        for _i, (_lbl, _atms) in enumerate(_lig_defs):
+                            _vals[_i] = float(_dihedral(coords_nm, _atms))
+                        lig_tors_frame = _vals
+                    except Exception:
+                        lig_tors_frame = np.zeros((0,), dtype=np.float32)
+
+                traj_data.append((self.cv_values.copy(), protein_coords.copy(), float(energy), float(bias_energy), lig_tors_frame))
 
                 if total_iterations >= 20 and (iter_idx + 1) % (total_iterations // 10) == 0:
                     progress_pct = int(100 * (iter_idx + 1) / total_iterations)

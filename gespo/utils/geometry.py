@@ -95,6 +95,211 @@ def find_all_backbone_dihedrals(topology: Topology) -> List[Tuple[str, Tuple[int
     return dihedrals
 
 
+def find_ligand_rotatable_dihedrals_smiles(
+    md_topology: md.Topology,
+    ligand_smiles: str,
+    ligand_resnames: Optional[List[str]] = None,
+) -> List[Tuple[str, Tuple[int, int, int, int]]]:
+    """RDKit + SMILES + standard SMARTS rotatable bond detection.
+
+    Uses the canonical SMARTS pattern `[!$(*#*)&!D1]-&!@[!$(*#*)&!D1]`
+    after assigning bond orders from a SMILES template. Allows
+    hydrogen as i/l atom when no heavy neighbor is available
+    (e.g., amidine C-N rotation where N has only H attached).
+
+    Returns list of (label, (i, j, k, l)) using global atom indices.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError:
+        return []
+
+    template = Chem.MolFromSmiles(str(ligand_smiles))
+    if template is None:
+        return []
+    template = Chem.AddHs(template)
+    rot_smarts = Chem.MolFromSmarts("[!$(*#*)&!D1]-&!@[!$(*#*)&!D1]")
+
+    PROTEIN_RESNAMES = {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU", "GLY",
+        "HIS", "HID", "HIE", "HIP", "ILE", "LEU", "LYS", "MET", "PHE",
+        "PRO", "SER", "THR", "TRP", "TYR", "VAL", "ACE", "NME",
+        "HOH", "WAT", "TIP3", "NA", "CL", "K", "CA2",
+    }
+
+    dihedrals: List[Tuple[str, Tuple[int, int, int, int]]] = []
+
+    for res in md_topology.residues:
+        if ligand_resnames and res.name not in ligand_resnames:
+            continue
+        if not ligand_resnames and res.name.upper() in PROTEIN_RESNAMES:
+            continue
+
+        atoms = list(res.atoms)
+        if len(atoms) < 4:
+            continue
+
+        # Build a minimal RDKit Mol from topology atoms + intra-residue bonds.
+        emol = Chem.RWMol()
+        local_to_global: List[int] = []
+        for a in atoms:
+            emol.AddAtom(Chem.Atom(a.element.symbol))
+            local_to_global.append(a.index)
+        global_to_local = {gi: li for li, gi in enumerate(local_to_global)}
+
+        for b in md_topology.bonds:
+            a1, a2 = b[0], b[1]
+            if a1.residue.index != res.index or a2.residue.index != res.index:
+                continue
+            li1 = global_to_local.get(a1.index)
+            li2 = global_to_local.get(a2.index)
+            if li1 is not None and li2 is not None:
+                emol.AddBond(li1, li2, Chem.BondType.SINGLE)
+
+        topology_mol = emol.GetMol()
+
+        # Assign correct bond orders by matching the SMILES template.
+        try:
+            topology_mol = AllChem.AssignBondOrdersFromTemplate(template, topology_mol)
+        except Exception:
+            continue
+
+        # Find rotatable bonds.
+        matches = topology_mol.GetSubstructMatches(rot_smarts)
+        seen_bonds: set = set()
+        for m in matches:
+            a_local, b_local = sorted([int(m[0]), int(m[1])])
+            if (a_local, b_local) in seen_bonds:
+                continue
+            seen_bonds.add((a_local, b_local))
+
+            atom_a = topology_mol.GetAtomWithIdx(a_local)
+            atom_b = topology_mol.GetAtomWithIdx(b_local)
+
+            def _pick_neighbor(atom, exclude_idx):
+                heavy = None
+                any_atom = None
+                for n in atom.GetNeighbors():
+                    if n.GetIdx() == exclude_idx:
+                        continue
+                    if any_atom is None:
+                        any_atom = n.GetIdx()
+                    if n.GetSymbol() != "H":
+                        heavy = n.GetIdx()
+                        break
+                return heavy if heavy is not None else any_atom
+
+            i_local = _pick_neighbor(atom_a, b_local)
+            l_local = _pick_neighbor(atom_b, a_local)
+            if i_local is None or l_local is None:
+                continue
+
+            label = f"{res.name}{res.resSeq}_rot_{atoms[a_local].name}-{atoms[b_local].name}"
+            dihedrals.append((label, (
+                int(local_to_global[i_local]),
+                int(local_to_global[a_local]),
+                int(local_to_global[b_local]),
+                int(local_to_global[l_local]),
+            )))
+
+    return dihedrals
+
+
+def find_ligand_rotatable_dihedrals(
+    md_topology: md.Topology,
+    ligand_resnames: Optional[List[str]] = None,
+) -> List[Tuple[str, Tuple[int, int, int, int]]]:
+    """Legacy heavy-atoms-only rotatable bond detection.
+
+    Iterates residue bonds and selects non-ring, non-terminal heavy-heavy bonds.
+    Misses rotatable bonds where one side has only H neighbors (e.g., amidine C-N).
+    Prefer find_ligand_rotatable_dihedrals_smiles() when a SMILES is available.
+
+    Returns list of (label, (i, j, k, l)) using global atom indices.
+    """
+    PROTEIN_RESNAMES = {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU", "GLY",
+        "HIS", "HID", "HIE", "HIP", "ILE", "LEU", "LYS", "MET", "PHE",
+        "PRO", "SER", "THR", "TRP", "TYR", "VAL", "ACE", "NME",
+        "HOH", "WAT", "TIP3", "NA", "CL", "K", "CA2",
+    }
+
+    dihedrals: List[Tuple[str, Tuple[int, int, int, int]]] = []
+
+    for res in md_topology.residues:
+        if ligand_resnames and res.name not in ligand_resnames:
+            continue
+        if not ligand_resnames and res.name.upper() in PROTEIN_RESNAMES:
+            continue
+
+        atoms = list(res.atoms)
+        heavy = [a for a in atoms if a.element.symbol != "H"]
+        if len(heavy) < 4:
+            continue
+
+        heavy_idx = {a.index for a in heavy}
+        bonds = []
+        for b in md_topology.bonds:
+            a1, a2 = b[0], b[1]
+            if a1.residue.index == res.index and a2.residue.index == res.index:
+                if a1.index in heavy_idx and a2.index in heavy_idx:
+                    bonds.append((a1, a2))
+
+        for a1, a2 in bonds:
+            if a1.element.symbol == "H" or a2.element.symbol == "H":
+                continue
+            in_ring = _atoms_in_same_ring(a1, a2, md_topology, res)
+            if in_ring:
+                continue
+            n1 = [x for x in _bonded_heavy(a1, md_topology, res) if x.index != a2.index]
+            n2 = [x for x in _bonded_heavy(a2, md_topology, res) if x.index != a1.index]
+            if not n1 or not n2:
+                continue
+            i_atom = max(n1, key=lambda a: a.element.mass)
+            l_atom = max(n2, key=lambda a: a.element.mass)
+            label = f"{res.name}{res.resSeq}_rot_{a1.name}-{a2.name}"
+            dihedrals.append((label, (i_atom.index, a1.index, a2.index, l_atom.index)))
+
+    return dihedrals
+
+
+def _bonded_heavy(atom, topology, residue):
+    """Return heavy atoms bonded to `atom` within the same residue."""
+    result = []
+    for b in topology.bonds:
+        a1, a2 = b[0], b[1]
+        if a1.index == atom.index and a2.residue.index == residue.index and a2.element.symbol != "H":
+            result.append(a2)
+        elif a2.index == atom.index and a1.residue.index == residue.index and a1.element.symbol != "H":
+            result.append(a1)
+    return result
+
+
+def _atoms_in_same_ring(a1, a2, topology, residue):
+    """Check if two atoms are in the same ring (simple BFS-based)."""
+    adj = {}
+    for b in topology.bonds:
+        b1, b2 = b[0], b[1]
+        if b1.residue.index == residue.index and b2.residue.index == residue.index:
+            if b1.element.symbol != "H" and b2.element.symbol != "H":
+                adj.setdefault(b1.index, []).append(b2.index)
+                adj.setdefault(b2.index, []).append(b1.index)
+    visited = {a1.index}
+    queue = [(n, [a1.index, n]) for n in adj.get(a1.index, []) if n != a2.index]
+    while queue:
+        node, path = queue.pop(0)
+        if node == a2.index and len(path) >= 3:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        for nb in adj.get(node, []):
+            if nb not in visited or (nb == a2.index and len(path) >= 2):
+                queue.append((nb, path + [nb]))
+    return False
+
+
 def find_all_sidechain_chi_dihedrals(
     topology: Topology,
     *,

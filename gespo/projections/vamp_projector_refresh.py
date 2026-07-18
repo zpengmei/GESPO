@@ -71,8 +71,6 @@ def _refresh_vamp_projectors(
     _iter_history_trajs,
 ) -> Optional[Dict[str, Any]]:
     """Refresh VAMP (soft assignments) + VAC (linear) projectors from cached embeddings."""
-    nonlocal boundary_plugin_fit_keys, boundary_plugin_fit_nonce
-
     if geom2vec_cache is None or geom2vec_projector is None or geom2vec_projector_linear is None:
         return
     if not all_epoch_data:
@@ -327,15 +325,15 @@ def _refresh_vamp_projectors(
                             seed=int(seed_base) + 77,
                             epsilon=float(epsilon),
                             inverse_mode=str(inverse_mode),
-                softmax_output=True,
-                vamp_merger=bool(vamp_merger),
-                vamp_merger_window=int(vamp_merger_window),
-                double_lobe=bool(vamp_double_lobe),
-                lobe_invariant=bool(lobe_invariant),
-                data_parallel=bool(dp_geom2vec),
-                data_parallel_devices=dp_geom2vec_devices,
-                lobe_kwargs=lobe_kwargs,
-            )
+                            softmax_output=True,
+                            vamp_merger=bool(vamp_merger),
+                            vamp_merger_window=int(vamp_merger_window),
+                            double_lobe=bool(vamp_double_lobe),
+                            lobe_invariant=bool(lobe_invariant),
+                            data_parallel=bool(dp_geom2vec),
+                            data_parallel_devices=dp_geom2vec_devices,
+                            lobe_kwargs=lobe_kwargs,
+                        )
                         lobe_fallback = trained_vamp.lobe
                         if isinstance(lobe_fallback, (tuple, list)):
                             lobe_fallback = lobe_fallback[0]

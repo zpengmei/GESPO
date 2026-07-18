@@ -88,6 +88,7 @@ class TrainingConfig:
     retrieval_cache_max_frames: int = 0
     retrieval_use_global_metrics: bool = True
     retrieval_global_weight: float = 1.0
+    retrieval_preseed_labels_npz: str = ""
     global_rmsd_range: tuple = None
     global_e2e_range: tuple = None
     global_rg_range: tuple = None
@@ -121,6 +122,7 @@ class TrainingConfig:
     torsion_ar_checkpoint: str = ""
     torsion_ar_mode: str = "backbone"
     torsion_ar_global_token_set: str = ""
+    torsion_ar_sample_temperature: float = 1.0
     pretrain_torsion_ar: str = ""
     torsion_ar_epochs: int = 10
     torsion_ar_batch_size: int = 64
@@ -132,6 +134,14 @@ class TrainingConfig:
     disable_vamp_ensemble: bool = False
     geom2vec_vamp_n_models: int = 3
     tica_start_transition_weight: float = 1.0
+
+    # ── Ligand ─────────────────────────────────────────────────────────
+    ligand_smiles: str = ""
+    ligand_pocket_restraint: bool = False
+    ligand_pocket_restraint_radius_nm: float = 0.6
+    ligand_pocket_restraint_k: float = 1000.0
+    ligand_pocket_seq_pos: int = 170
+    pocket_ref_pdb: str = ""
 
     # ── Experimental ───────────────────────────────────────────────────
     use_muon: bool = False
@@ -225,6 +235,7 @@ class TrainingConfig:
             "no_help": "Use φ/ψ only for retrieval distance.",
         },
         "retrieval_global_weight": "Weight for RMSD/E2E metrics in retrieval embedding (0=disabled).",
+        "retrieval_preseed_labels_npz": "Path to precomputed labels.npz for balanced retrieval from epoch 1.",
         "global_rmsd_range": {
             "help": "Conditional sampling range for RMSD global token (nm): MIN MAX.",
             "nargs": 2, "metavar": ("MIN", "MAX"), "type_override": float,
@@ -316,6 +327,27 @@ class TrainingConfig:
         ),
         "tica_start_transition_weight": (
             "Weight for start-to-end displacement bonus in projection space."
+        ),
+        # Ligand
+        "ligand_smiles": {
+            "help": "SMILES string for the ligand (registers GAFF template for OpenMM).",
+        },
+        "ligand_pocket_restraint": {
+            "help": "Enable flat-bottom distance restraint between ligand COM and pocket residue COM.",
+            "flag_only": True,
+        },
+        "ligand_pocket_restraint_radius_nm": (
+            "Flat-bottom radius (nm). No force when COM distance < this value."
+        ),
+        "ligand_pocket_restraint_k": (
+            "Force constant (kJ/mol/nm^2) for harmonic wall beyond the flat-bottom radius."
+        ),
+        "ligand_pocket_seq_pos": (
+            "Sequence position (0-indexed) of the pocket residue for ligand restraint (default 170 = Asp189 in trypsin)."
+        ),
+        "pocket_ref_pdb": (
+            "Reference PDB containing a bound ligand for pocket auto-detection. "
+            "Use when --pdb is an apo structure with no ligand (e.g. no-ligand GESPO runs)."
         ),
         # Experimental
         "use_muon": {

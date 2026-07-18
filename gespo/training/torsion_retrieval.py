@@ -94,6 +94,23 @@ def embed_sincos_from_torsions_np(
     return emb.reshape(n, -1).astype(np.float32, copy=False)
 
 
+def match_torsion_residue_count(torsions: np.ndarray, target_n_residues: int) -> np.ndarray:
+    """Pad or trim torsion tensors along the residue axis."""
+    arr = np.asarray(torsions, dtype=np.float32)
+    if arr.ndim != 3:
+        raise ValueError(f"torsions must be [N,L,A], got {arr.shape}")
+    target = int(target_n_residues)
+    if target <= 0:
+        raise ValueError(f"target_n_residues must be positive, got {target}")
+    cur = int(arr.shape[1])
+    if cur == target:
+        return arr
+    if cur > target:
+        return arr[:, :target, :].astype(np.float32, copy=False)
+    pad = np.zeros((arr.shape[0], target - cur, arr.shape[2]), dtype=np.float32)
+    return np.concatenate([arr, pad], axis=1).astype(np.float32, copy=False)
+
+
 def dihedral_batch(coords_nm: np.ndarray, torsion_atoms: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """
     Vectorized dihedral angles for a batch of frames.

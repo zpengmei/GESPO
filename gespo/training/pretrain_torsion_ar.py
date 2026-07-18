@@ -81,6 +81,8 @@ def _build_torsion_dataset_from_dcd(
     stride: int = 1,
     global_token_set: str = "rmsd_e2e",
     torsion_mode: str = "backbone",
+    ligand_smiles: str = "",
+    pocket_ref_pdb: str = "",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a torsion dataset from trajectory files under base_dir using MDTraj.
@@ -131,7 +133,41 @@ def _build_torsion_dataset_from_dcd(
     except Exception:
         ref = ref_full
     ref_top = ref.topology
+    # Filter out non-amino-acid residues that infer_protein_atom_indices may have
+    # incorrectly included (e.g., UNK ligand can be included if it has standard
+    # backbone-like atom names).
+    PROTEIN_AA = {"ALA","ARG","ASN","ASP","CYS","CYX","GLN","GLU","GLY","HIS","HID","HIE","HIP",
+                  "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP","TYR","VAL","ACE","NME"}
+    _non_aa = [r for r in ref_top.residues if r.name.upper() not in PROTEIN_AA]
+    if _non_aa:
+        _aa_atoms = [a.index for r in ref_top.residues if r.name.upper() in PROTEIN_AA for a in r.atoms]
+        if _aa_atoms:
+            print(f"[TorsionAR Pretrain] Filtering {len(_non_aa)} non-AA residue(s) from protein "
+                  f"topology: {[r.name for r in _non_aa]}")
+            ref = ref.atom_slice(_aa_atoms)
+            ref_top = ref.topology
     n_res = ref_top.n_residues
+
+    # Detect ligand rotatable dihedrals in the full (unsplit) topology.
+    # Use SMILES-based RDKit detection if available (allows H neighbors, e.g. amidine).
+    _lig_smiles = str(ligand_smiles or "")
+    if _lig_smiles:
+        from gespo.utils.geometry import find_ligand_rotatable_dihedrals_smiles
+        ligand_dihedrals = find_ligand_rotatable_dihedrals_smiles(ref_full.topology, _lig_smiles)
+        print(f"[TorsionAR Pretrain] Using RDKit+SMILES rotatable bond detection (smiles={_lig_smiles})")
+    else:
+        from gespo.utils.geometry import find_ligand_rotatable_dihedrals
+        ligand_dihedrals = find_ligand_rotatable_dihedrals(ref_full.topology)
+    n_ligand_torsions = len(ligand_dihedrals)
+    if n_ligand_torsions > 0:
+        print(f"[TorsionAR Pretrain] Found {n_ligand_torsions} ligand rotatable dihedral(s):")
+        for label, (i, j, k, l) in ligand_dihedrals:
+            print(f"  {label}: atoms ({i},{j},{k},{l})")
+        # NEW LAYOUT: each ligand dihedral gets its OWN position in the sequence
+        # (instead of cramming all into 1 slot at different angle indices).
+        n_res_total = n_res + n_ligand_torsions
+    else:
+        n_res_total = n_res
 
     # Build residue type vocabulary via 3-letter → 1-letter mapping.
     three_to_one = {
@@ -210,6 +246,9 @@ def _build_torsion_dataset_from_dcd(
     if not traj_files:
         raise RuntimeError(f"[TorsionAR Pretrain] No .dcd/.xtc files found under {base_dirs}")
 
+    first_traj_for_pocket_log = True
+    _AA_SET = {"ALA","ARG","ASN","ASP","CYS","CYX","GLN","GLU","GLY","HIS","HID","HIE","HIP",
+               "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP","TYR","VAL","ACE","NME"}
     torsion_blocks = []
     mask_blocks = []
     globals_blocks = []
@@ -324,6 +363,7 @@ def _build_torsion_dataset_from_dcd(
         print(f"[TorsionAR Pretrain] Loading {fpath} (stride={stride})")
 
         tr = None
+        _tr_full_for_ligand = None
         try:
             # Fast path: protein-only DCDs (implicit solvent / legacy saves).
             tr = md.load(fpath, top=ref_top, stride=max(1, stride))
@@ -348,7 +388,14 @@ def _build_torsion_dataset_from_dcd(
                 if prot_idx is None or len(prot_idx) == 0:
                     print(f"[TorsionAR Pretrain] Skipping {fpath}: no protein atoms in topology {sim_top}")
                     continue
+                # Keep full trajectory for ligand torsion extraction later
+                _tr_full_for_ligand = tr_full
                 tr = tr_full.atom_slice(prot_idx)
+                # Filter UNK/non-AA residues (consistent with reference topology filtering).
+                _aa_atoms_in_tr = [a.index for r in tr.topology.residues
+                                   if r.name.upper() in PROTEIN_AA for a in r.atoms]
+                if _aa_atoms_in_tr and len(_aa_atoms_in_tr) < tr.n_atoms:
+                    tr = tr.atom_slice(_aa_atoms_in_tr)
             except Exception as exc:
                 print(f"[TorsionAR Pretrain] Skipping {fpath}: {exc}")
                 continue
@@ -450,6 +497,34 @@ def _build_torsion_dataset_from_dcd(
         else:
             tors_block = np.stack([phi_arr, psi_arr, omg_arr], axis=-1)  # [F,L,3]
             mask_block = np.stack([phi_mask, psi_mask, omg_mask], axis=-1)  # [F,L,3]
+
+        # Append ligand rotatable dihedrals — ONE POSITION PER DIHEDRAL.
+        # Layout: each ligand dihedral occupies its own residue position in the
+        # sequence (using the SAME torsion representation as backbone). The dihedral
+        # value is stored at angle index 0 (phi-like); other angles are masked off.
+        if n_ligand_torsions > 0:
+            n_a = tors_block.shape[2]  # angles per residue
+            lig_tors = np.zeros((n_frames, n_ligand_torsions, n_a), dtype=np.float32)
+            lig_mask = np.zeros((n_frames, n_ligand_torsions, n_a), dtype=bool)
+
+            # Compute ligand dihedrals from the full trajectory (before protein slicing).
+            lig_source = _tr_full_for_ligand
+            if lig_source is None:
+                # Protein-only DCD — no ligand atoms available; use zeros + masked out
+                pass
+            else:
+                for d_idx, (label, (ai, aj, ak, al)) in enumerate(ligand_dihedrals):
+                    try:
+                        dih_indices = np.array([[ai, aj, ak, al]], dtype=np.int32)
+                        dih_vals = md.compute_dihedrals(lig_source, dih_indices)  # [F, 1]
+                        # NEW: store at d_idx-th position (own row), angle column 0.
+                        lig_tors[:, d_idx, 0] = dih_vals[:, 0].astype(np.float32)
+                        lig_mask[:, d_idx, 0] = True
+                    except Exception as exc_lig:
+                        print(f"[TorsionAR Pretrain] Warning: failed to compute ligand dihedral {label}: {exc_lig}")
+
+            tors_block = np.concatenate([tors_block, lig_tors], axis=1)  # [F, L+N_lig, A]
+            mask_block = np.concatenate([mask_block, lig_mask], axis=1)  # [F, L+N_lig, A]
 
         # Global metrics per frame.
         if use_adk_domain4_rmsd_ab:
@@ -694,6 +769,131 @@ def _build_torsion_dataset_from_dcd(
             else:
                 glob_block = np.stack([rmsd_nm, e2e_nm], axis=-1).astype(np.float32, copy=False)  # [F,2]
 
+            # Append ligand-protein distance if requested.
+            if token_set in {"rmsd_e2e_ligdist", "rmsd_e2e_lig"}:
+                try:
+                    lig_heavy = np.array([a.index for a in tr.topology.atoms
+                                          if a.residue.name in ("UNK", "BEN", "LIG") and a.element.symbol != "H"], dtype=int)
+                    asp_heavy = np.array([a.index for a in tr.topology.atoms
+                                          if a.residue.resSeq == 189 and a.element.symbol != "H"
+                                          and a.residue.name in ("ASP", "ASN")], dtype=int)
+                    if len(lig_heavy) > 0 and len(asp_heavy) > 0:
+                        pairs = np.array([(i, j) for i in lig_heavy for j in asp_heavy])
+                        dists = md.compute_distances(tr, pairs)  # [F, n_pairs] in nm
+                        lig_dist_nm = dists.min(axis=1).astype(np.float32)
+                    else:
+                        lig_dist_nm = np.zeros((n_frames,), dtype=np.float32)
+                except Exception:
+                    lig_dist_nm = np.zeros((n_frames,), dtype=np.float32)
+                glob_block = np.concatenate([glob_block, lig_dist_nm.reshape(-1, 1)], axis=1)
+
+            # Append pocket descriptors if requested: pocket_CA_RMSD + N_contacts.
+            # Must use the full-system trajectory (_tr_full_for_ligand) since `tr` is protein-only.
+            if token_set in {"rmsd_e2e_pocket", "rmsd_e2e_pocket3", "rmsd_e2e_pocket_contacts", "rmsd_e2e_pocket_full"}:
+                tr_pocket = _tr_full_for_ligand if _tr_full_for_ligand is not None else None
+                # If no full-system traj available, try reloading with simulation_topology
+                if tr_pocket is None:
+                    sim_top_cand = base_dir_topology.get(bdir)
+                    if sim_top_cand:
+                        try:
+                            tr_pocket = md.load(fpath, top=sim_top_cand, stride=max(1, stride))
+                        except Exception:
+                            tr_pocket = None
+                if tr_pocket is None:
+                    tr_pocket = tr
+                try:
+                    POCKET_CUTOFF_NM = 0.5
+                    lig_names = {"UNK", "BEN", "LIG"}
+                    lig_heavy_idx = np.array([a.index for a in tr_pocket.topology.atoms
+                                              if a.residue.name in lig_names and a.element.symbol != "H"], dtype=int)
+                    prot_heavy_idx = np.array([a.index for r in tr_pocket.topology.residues
+                                               if r.name.upper() in _AA_SET
+                                               for a in r.atoms if a.element.symbol != "H"], dtype=int)
+                    # Detect pocket from the REFERENCE PDB (bound state), not from
+                    # each trajectory's frame 0 (ligand may have dissociated during MD).
+                    if pocket_ref_pdb and os.path.isfile(pocket_ref_pdb):
+                        import mdtraj as _md_pref
+                        _ref_for_pocket = _md_pref.load(pocket_ref_pdb)
+                    else:
+                        _ref_for_pocket = ref_full  # full PDB with ligand
+                    _ref_lig_heavy = np.array([a.index for a in _ref_for_pocket.topology.atoms
+                                               if a.residue.name in lig_names and a.element.symbol != "H"], dtype=int)
+                    _ref_prot_res = [r for r in _ref_for_pocket.topology.residues if r.name.upper() in _AA_SET]
+                    if len(_ref_lig_heavy) == 0:
+                        raise ValueError("No ligand atoms in reference PDB")
+                    _ref_lig_xyz = _ref_for_pocket.xyz[0, _ref_lig_heavy]
+                    pocket_res_set = set()
+                    for ri, r in enumerate(_ref_prot_res):
+                        r_heavy = [a.index for a in r.atoms if a.element.symbol != "H"]
+                        if not r_heavy: continue
+                        d = np.min(np.linalg.norm(
+                            _ref_for_pocket.xyz[0, r_heavy, :][:, None, :] - _ref_lig_xyz[None, :, :], axis=-1))
+                        if d < POCKET_CUTOFF_NM:
+                            pocket_res_set.add(ri)
+                    # Map pocket residue indices from ref PDB to trajectory atom indices
+                    traj_prot_res = [r for r in tr_pocket.topology.residues if r.name.upper() in _AA_SET]
+                    pocket_ca_idx = np.array([a.index for ri in sorted(pocket_res_set)
+                                              if ri < len(traj_prot_res)
+                                              for a in traj_prot_res[ri].atoms if a.name == "CA"], dtype=int)
+                    if len(pocket_ca_idx) < 2:
+                        raise ValueError(f"Pocket too small ({len(pocket_ca_idx)} CA, {len(_ref_lig_heavy)} lig atoms in ref)")
+                    # Reference pocket CA from the reference PDB (bound conformation)
+                    ref_pocket_ca_from_pdb = np.array([a.index for ri in sorted(pocket_res_set)
+                                                       if ri < len(_ref_prot_res)
+                                                       for a in _ref_prot_res[ri].atoms if a.name == "CA"], dtype=int)
+                    ref_pocket_ca = _ref_for_pocket.xyz[0, ref_pocket_ca_from_pdb].astype(np.float64)
+                    # Per-frame: pocket CA RMSD
+                    pocket_rmsd = np.zeros(n_frames, dtype=np.float32)
+                    for fi in range(n_frames):
+                        cur = tr_pocket.xyz[fi, pocket_ca_idx].astype(np.float64)
+                        Pc = cur - cur.mean(0); Qc = ref_pocket_ca - ref_pocket_ca.mean(0)
+                        H = Pc.T @ Qc; U, _, Vt = np.linalg.svd(H); V = Vt.T
+                        d = np.sign(np.linalg.det(V @ U.T))
+                        pocket_rmsd[fi] = np.sqrt(np.mean(np.sum(
+                            (Pc @ (V @ np.diag([1.,1.,d]) @ U.T).T - Qc)**2, axis=1)))
+                    # Per-frame: N contacts (protein-ligand heavy pairs within 4Å)
+                    n_contacts = np.zeros(n_frames, dtype=np.float32)
+                    for fi in range(n_frames):
+                        dists = np.linalg.norm(
+                            tr_pocket.xyz[fi, prot_heavy_idx, :][:, None, :] -
+                            tr_pocket.xyz[fi, lig_heavy_idx, :][None, :, :], axis=-1)
+                        n_contacts[fi] = float((dists < 0.4).sum())
+                    n_contacts_scaled = n_contacts / 100.0
+                    # Per-frame: lig-pocket COM distance (BEN heavy COM ↔ pocket Cα COM)
+                    lig_pocket_dist = np.zeros(n_frames, dtype=np.float32)
+                    if len(lig_heavy_idx) > 0 and len(pocket_ca_idx) > 0:
+                        for fi in range(n_frames):
+                            lig_com = tr_pocket.xyz[fi, lig_heavy_idx].mean(axis=0)
+                            pocket_com = tr_pocket.xyz[fi, pocket_ca_idx].mean(axis=0)
+                            lig_pocket_dist[fi] = float(np.linalg.norm(lig_com - pocket_com))
+                    if token_set == "rmsd_e2e_pocket3":
+                        glob_block = np.concatenate([glob_block,
+                                                     pocket_rmsd.reshape(-1, 1)], axis=1)
+                    elif token_set == "rmsd_e2e_pocket_full":
+                        glob_block = np.concatenate([glob_block,
+                                                     pocket_rmsd.reshape(-1, 1),
+                                                     n_contacts_scaled.reshape(-1, 1),
+                                                     lig_pocket_dist.reshape(-1, 1)], axis=1)
+                    else:
+                        glob_block = np.concatenate([glob_block,
+                                                     pocket_rmsd.reshape(-1, 1),
+                                                     n_contacts_scaled.reshape(-1, 1)], axis=1)
+                    if first_traj_for_pocket_log:
+                        print(f"[TorsionAR Pretrain] Pocket: {len(pocket_res_set)} residues, "
+                              f"{len(pocket_ca_idx)} CA atoms (auto-detected within {POCKET_CUTOFF_NM*10:.0f}Å of ligand)",
+                              flush=True)
+                        first_traj_for_pocket_log = False
+                except Exception as exc_pocket:
+                    print(f"[TorsionAR Pretrain] Warning: pocket descriptor failed ({exc_pocket}); using zeros.", flush=True)
+                    if token_set == "rmsd_e2e_pocket3":
+                        n_pocket_cols = 1
+                    elif token_set == "rmsd_e2e_pocket_full":
+                        n_pocket_cols = 3
+                    else:
+                        n_pocket_cols = 2
+                    glob_block = np.concatenate([glob_block,
+                                                 np.zeros((n_frames, n_pocket_cols), dtype=np.float32)], axis=1)
+
         torsion_blocks.append(tors_block)
         mask_blocks.append(mask_block)
         globals_blocks.append(glob_block)
@@ -707,7 +907,13 @@ def _build_torsion_dataset_from_dcd(
     mask_all = np.concatenate(mask_blocks, axis=0)
     globals_all = np.concatenate(globals_blocks, axis=0) if globals_blocks else np.zeros((torsions_all.shape[0], 0), dtype=np.float32)
     N_total = torsions_all.shape[0]
-    residue_types = np.tile(residue_types_1d[None, :], (N_total, 1))
+
+    # Append ligand residue type (unknown/fallback) — one per rotatable bond position.
+    if n_ligand_torsions > 0:
+        residue_types_with_lig = np.append(residue_types_1d, [fallback_idx] * n_ligand_torsions)
+    else:
+        residue_types_with_lig = residue_types_1d
+    residue_types = np.tile(residue_types_with_lig[None, :], (N_total, 1))
 
     print(f"[TorsionAR Pretrain] Final dataset: {torsions_all.shape[0]} frames, "
           f"{torsions_all.shape[1]} residues.")
@@ -731,6 +937,12 @@ def pretrain_torsion_ar(
     stride: int = 1,
     global_token_set: str = "rmsd_e2e",
     torsion_mode: str = "backbone",
+    ligand_smiles: str = "",
+    reweight_zenodo_dir: str = "",
+    reweight_ref_pdb: str = "",
+    reweight_labels_npz: str = "",
+    reweight_alpha: float = 1.0,
+    pocket_ref_pdb: str = "",
 ) -> None:
     """
     Pretrain the TorsionARPolicy on a dataset of torsion sequences.
@@ -765,6 +977,8 @@ def pretrain_torsion_ar(
             stride=stride,
             global_token_set=global_token_set,
             torsion_mode=torsion_mode,
+            ligand_smiles=ligand_smiles,
+            pocket_ref_pdb=pocket_ref_pdb,
         )
     else:
         torsions_np, angle_mask_np, residue_types_np, global_values_np = _load_npz_dataset(source_path, torsion_mode=torsion_mode)
@@ -838,6 +1052,12 @@ def pretrain_torsion_ar(
             } and n_global_tokens == 3:
                 from gespo.utils.ppi_metrics import PPI_GLOBAL_TOKEN_NAMES
                 token_names = list(PPI_GLOBAL_TOKEN_NAMES)
+            elif token_set in {"rmsd_e2e_pocket", "rmsd_e2e_pocket_contacts"} and n_global_tokens == 4:
+                token_names = ["rmsd_nm", "e2e_nm", "pocket_rmsd_nm", "n_contacts_scaled"]
+            elif token_set == "rmsd_e2e_pocket_full" and n_global_tokens == 5:
+                token_names = ["rmsd_nm", "e2e_nm", "pocket_rmsd_nm", "n_contacts_scaled", "lig_pocket_dist_nm"]
+            elif token_set in {"rmsd_e2e_pocket", "rmsd_e2e_pocket3"} and n_global_tokens == 3:
+                token_names = ["rmsd_nm", "e2e_nm", "pocket_rmsd_nm"]
             elif n_global_tokens == 2:
                 token_names = ["rmsd_nm", "e2e_nm"]
             elif n_global_tokens == 3:
@@ -869,12 +1089,173 @@ def pretrain_torsion_ar(
                     )
     except Exception:
         pass
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=False,
-    )
+    # ── Optional: importance reweighting to uniform-state distribution ──
+    # If reweight_zenodo_dir is set, cluster training frames into 7 macrostates
+    # using 3 loop RMSDs (Asp189/Trp215/Loop225) vs 3PTB, anchored on Zenodo
+    # (Plattner & Noe 150μs) cluster centroids. Each frame gets weight
+    # 1/(N_in_its_cluster) so each state contributes ~equal mass during training.
+    sample_weights = None
+    # ── Precomputed labels (clean path, no Plattner) ──
+    if reweight_labels_npz:
+        try:
+            print(f"[TorsionAR Pretrain] Loading reweight labels from {reweight_labels_npz}", flush=True)
+            data = np.load(reweight_labels_npz, allow_pickle=True)
+            labels = np.asarray(data["labels"], dtype=np.int64)
+            if labels.shape[0] != torsions.shape[0]:
+                raise ValueError(f"labels.shape[0]={labels.shape[0]} != torsions.shape[0]={torsions.shape[0]}")
+            n_clusters = int(labels.max()) + 1
+            counts = np.bincount(labels, minlength=n_clusters)
+            print(f"[TorsionAR Pretrain] Cluster counts: " +
+                  " ".join(f"C{i}={int(counts[i])}({100*counts[i]/counts.sum():.1f}%)" for i in range(n_clusters)),
+                  flush=True)
+            alpha = float(reweight_alpha)
+            w = np.empty(labels.shape[0], dtype=np.float32)
+            for c in range(n_clusters):
+                n_c = max(int(counts[c]), 1)
+                w[labels == c] = 1.0 / float(n_c) ** alpha
+            w = w / w.sum() * w.shape[0]
+            sample_weights = torch.from_numpy(w).double()
+            ess = float((sample_weights.sum() ** 2 / (sample_weights ** 2).sum()).item())
+            print(f"[TorsionAR Pretrain] VAMP-cluster reweighting (alpha={alpha}): ESS = {ess:.1f} / {sample_weights.shape[0]}", flush=True)
+        except Exception as exc_rl:
+            print(f"[TorsionAR Pretrain] Warning: labels-npz reweighting failed ({exc_rl}); falling back to uniform.", flush=True)
+            sample_weights = None
+
+    if sample_weights is None and reweight_zenodo_dir:
+        import glob as _glob
+        from sklearn.cluster import KMeans
+        _AA_SET = {"ALA","ARG","ASN","ASP","CYS","CYX","GLN","GLU","GLY","HIS","HID","HIE","HIP",
+                   "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP","TYR","VAL","ACE","NME"}
+        try:
+            print(f"[TorsionAR Pretrain] Computing importance weights using Zenodo at {reweight_zenodo_dir}", flush=True)
+            zen_top_pdb = os.path.join(reweight_zenodo_dir, "nowat_noCa.pdb")
+            zen_files = sorted(_glob.glob(os.path.join(reweight_zenodo_dir, "cnew-2micro-*.xtc")))
+            ref_3ptb_path = reweight_ref_pdb or pdb_path
+
+            YELLOW_LOOP_IDX = list(range(168, 176))
+            GREEN_LOOP_IDX = list(range(192, 199))
+            ORANGE_LOOP_IDX = list(range(202, 208))
+
+            def _filter_aa(traj):
+                aa_atoms = [a.index for r in traj.topology.residues
+                            if r.name.upper() in _AA_SET for a in r.atoms]
+                if aa_atoms and len(aa_atoms) < traj.n_atoms:
+                    return traj.atom_slice(aa_atoms)
+                return traj
+
+            def _get_ca(t, idxs):
+                prot = [r for r in t.topology.residues if r.name.upper() in _AA_SET]
+                out = []
+                for ri in idxs:
+                    if ri >= len(prot):
+                        continue
+                    for a in prot[ri].atoms:
+                        if a.name == "CA":
+                            out.append(a.index); break
+                return np.array(out, dtype=np.int64)
+
+            def _kabsch_rmsd(P, Q):
+                Pc = P - P.mean(0); Qc = Q - Q.mean(0)
+                H = Pc.T @ Qc
+                U, _, Vt = np.linalg.svd(H)
+                V = Vt.T
+                d = np.sign(np.linalg.det(V @ U.T))
+                D = np.diag([1.0, 1.0, d])
+                R = V @ D @ U.T
+                return np.sqrt(np.mean(np.sum((Pc @ R.T - Qc) ** 2, axis=1)))
+
+            # 3PTB reference (filtered to AA)
+            ref_traj = _filter_aa(md.load(ref_3ptb_path))
+            ref_y = ref_traj.xyz[0, _get_ca(ref_traj, YELLOW_LOOP_IDX), :].astype(np.float64)
+            ref_g = ref_traj.xyz[0, _get_ca(ref_traj, GREEN_LOOP_IDX), :].astype(np.float64)
+            ref_o = ref_traj.xyz[0, _get_ca(ref_traj, ORANGE_LOOP_IDX), :].astype(np.float64)
+
+            # Fit clusters on Zenodo (load XTC with FULL topology, then filter)
+            zen_top_full = md.load(zen_top_pdb)
+            zen_feats = []
+            # Get AA-filtered version (used for CA selection)
+            zen_top_aa = _filter_aa(zen_top_full)
+            z_y_ca = _get_ca(zen_top_aa, YELLOW_LOOP_IDX)
+            z_g_ca = _get_ca(zen_top_aa, GREEN_LOOP_IDX)
+            z_o_ca = _get_ca(zen_top_aa, ORANGE_LOOP_IDX)
+            for f in zen_files:
+                tr_z = md.load(f, top=zen_top_full.topology, stride=20)
+                tr_z = _filter_aa(tr_z)
+                for i in range(tr_z.n_frames):
+                    y = 10 * _kabsch_rmsd(tr_z.xyz[i, z_y_ca, :].astype(np.float64), ref_y)
+                    g = 10 * _kabsch_rmsd(tr_z.xyz[i, z_g_ca, :].astype(np.float64), ref_g)
+                    o = 10 * _kabsch_rmsd(tr_z.xyz[i, z_o_ca, :].astype(np.float64), ref_o)
+                    zen_feats.append([y, g, o])
+            zen_feats = np.asarray(zen_feats, dtype=np.float32)
+            km = KMeans(n_clusters=7, n_init=30, random_state=42)
+            km.fit(zen_feats)
+            print(f"[TorsionAR Pretrain] Zenodo cluster centroids (Y, G, O in Å):", flush=True)
+            for s in range(7):
+                c = km.cluster_centers_[s]
+                print(f"  S{s}: Y={c[0]:.2f} G={c[1]:.2f} O={c[2]:.2f}", flush=True)
+
+            # Compute training-data loop RMSDs (re-load trajectories)
+            train_feats = []
+            for bdir in source_dirs:
+                if not os.path.isdir(bdir):
+                    continue
+                for ext in ("*.dcd", "*.xtc"):
+                    for fpath in sorted(_glob.glob(os.path.join(bdir, "**", ext), recursive=True)):
+                        try:
+                            local_top_path = None
+                            for cand_pdb in [os.path.join(os.path.dirname(fpath), "simulation_topology.pdb"),
+                                              os.path.join(os.path.dirname(os.path.dirname(fpath)), "simulation_topology.pdb")]:
+                                if os.path.exists(cand_pdb):
+                                    local_top_path = cand_pdb; break
+                            local_top = md.load(local_top_path).topology if local_top_path else md.load(ref_3ptb_path).topology
+                            tr_t = md.load(fpath, top=local_top, stride=max(1, stride))
+                            tr_t = _filter_aa(tr_t)
+                            t_y_ca = _get_ca(tr_t, YELLOW_LOOP_IDX)
+                            t_g_ca = _get_ca(tr_t, GREEN_LOOP_IDX)
+                            t_o_ca = _get_ca(tr_t, ORANGE_LOOP_IDX)
+                            for i in range(tr_t.n_frames):
+                                y = 10 * _kabsch_rmsd(tr_t.xyz[i, t_y_ca, :].astype(np.float64), ref_y)
+                                g = 10 * _kabsch_rmsd(tr_t.xyz[i, t_g_ca, :].astype(np.float64), ref_g)
+                                o = 10 * _kabsch_rmsd(tr_t.xyz[i, t_o_ca, :].astype(np.float64), ref_o)
+                                train_feats.append([y, g, o])
+                        except Exception as exc_t:
+                            print(f"[TorsionAR Pretrain] Warning: reweight feature extract failed for {fpath}: {exc_t}", flush=True)
+                            continue
+            train_feats = np.asarray(train_feats, dtype=np.float32)
+            if train_feats.shape[0] != torsions.shape[0]:
+                print(f"[TorsionAR Pretrain] Warning: train_feats {train_feats.shape[0]} != torsions {torsions.shape[0]}; reweighting disabled.", flush=True)
+            else:
+                train_labels = km.predict(train_feats)
+                state_counts = np.bincount(train_labels, minlength=7)
+                print(f"[TorsionAR Pretrain] Train state populations: " +
+                      " ".join(f"S{i}={c}({100*c/state_counts.sum():.1f}%)" for i, c in enumerate(state_counts)),
+                      flush=True)
+                # Weight: 1/N_in_state → uniform state mass during sampling.
+                w = np.empty(train_labels.shape[0], dtype=np.float32)
+                for s in range(7):
+                    n_s = max(int(state_counts[s]), 1)
+                    w[train_labels == s] = 1.0 / float(n_s)
+                w = w / w.sum() * w.shape[0]
+                sample_weights = torch.from_numpy(w).double()
+                print(f"[TorsionAR Pretrain] Computed importance weights; effective sample size = "
+                      f"{(sample_weights.sum() ** 2 / (sample_weights ** 2).sum()).item():.1f} / {sample_weights.shape[0]}",
+                      flush=True)
+        except Exception as exc_rw:
+            print(f"[TorsionAR Pretrain] Warning: reweighting failed ({exc_rw}); using uniform sampling.", flush=True)
+            sample_weights = None
+
+    if sample_weights is not None:
+        sampler = torch.utils.data.WeightedRandomSampler(
+            sample_weights, num_samples=len(sample_weights), replacement=True
+        )
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, sampler=sampler, drop_last=False,
+        )
+        print(f"[TorsionAR Pretrain] Using WeightedRandomSampler for uniform-state training.", flush=True)
+    else:
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=True, drop_last=False,
+        )
 
     model = TorsionARPolicy(
         num_residues=L,
