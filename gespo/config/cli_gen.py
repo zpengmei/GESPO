@@ -16,11 +16,31 @@ def _to_flag(name: str) -> str:
     return "--" + name.replace("_", "-")
 
 
+# Curated "essential" flags shown in ``gespo train --help``. Every other flag is
+# still added and parsed — only its help text is suppressed unless the user asks
+# for ``--help-all``. Kept as a central allowlist (rather than tagging ~200
+# advanced fields) so the common surface stays small and easy to maintain.
+ESSENTIAL_FIELDS = frozenset({
+    # Core
+    "pdb", "pdb_b", "generative_loop", "path_sampling",
+    "episodes", "grp_size", "gen_device", "platform", "lr",
+    "projection", "torsion_ar_checkpoint",
+    # MD
+    "n_md_steps", "record_stride", "temperature",
+    "implicit_solvent", "explicit_solvent",
+    # Geom2Vec
+    "geom2vec_checkpoint", "geom2vec_lagtime", "geom2vec_dim",
+    # I/O
+    "snapshot_dir", "checkpoint_interval", "resume", "history_dcd_dir",
+})
+
+
 def populate_from_dataclass(
     parser: argparse.ArgumentParser,
     cls: type,
     group_name: str = "",
     cli_meta: dict | None = None,
+    show_advanced: bool = True,
 ) -> None:
     """Auto-generate argparse args from dataclass *cls*.
 
@@ -35,6 +55,9 @@ def populate_from_dataclass(
         no_flag, no_help, mutex, action, default_override, type_override.
 
         Falls back to ``cls.CLI_META`` when *cli_meta* is None.
+    show_advanced : if False, suppress the help text of non-essential fields
+        (see ``ESSENTIAL_FIELDS``). The flags are still added and parsed — only
+        their ``--help`` visibility changes. This is fully behavior-preserving.
     """
     target = parser.add_argument_group(group_name) if group_name else parser
     meta: dict = cli_meta if cli_meta is not None else getattr(cls, "CLI_META", {})
@@ -50,7 +73,8 @@ def populate_from_dataclass(
         if info.get("skip"):
             continue
 
-        help_text = info.get("help", f.name.replace("_", " "))
+        suppressed = (not show_advanced) and (f.name not in ESSENTIAL_FIELDS)
+        help_text = argparse.SUPPRESS if suppressed else info.get("help", f.name.replace("_", " "))
         flag = info.get("flag", _to_flag(f.name))
         aliases: list = list(info.get("aliases", []))
         flags = [flag] + aliases
@@ -105,7 +129,7 @@ def populate_from_dataclass(
             )
             if not info.get("flag_only"):
                 nf = info.get("no_flag", "--no-" + flag.lstrip("-"))
-                nh = info.get("no_help", f"Disable {f.name.replace('_', ' ')}.")
+                nh = argparse.SUPPRESS if suppressed else info.get("no_help", f"Disable {f.name.replace('_', ' ')}.")
                 dest.add_argument(nf, dest=f.name, action="store_false", help=nh)
             # Unset sentinel: neither --x nor --no-x passed → None (not the
             # concrete default), so from_args falls back to the dataclass value.

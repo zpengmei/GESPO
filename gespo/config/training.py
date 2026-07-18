@@ -397,20 +397,29 @@ class TrainingConfig:
     # ── CLI population ──────────────────────────────────────────────────
 
     @classmethod
-    def populate_parser(cls, parser: argparse.ArgumentParser):
-        """Populate the argparse parser with arguments mapping to this config."""
+    def populate_parser(cls, parser: argparse.ArgumentParser, show_advanced: bool = True):
+        """Populate the argparse parser with arguments mapping to this config.
+
+        When ``show_advanced`` is False, only the curated essential flags carry
+        help text (used for ``gespo train --help``); every flag is still added
+        and parsed. Pass ``show_advanced=True`` for ``--help-all``.
+        """
         from .cli_gen import populate_from_dataclass
 
+        def _pop(sub_cls, group_name):
+            populate_from_dataclass(parser, sub_cls, group_name=group_name,
+                                    show_advanced=show_advanced)
+
         # Auto-generate from all config dataclasses.
-        populate_from_dataclass(parser, cls, group_name="Core & RL")
-        populate_from_dataclass(parser, PathSamplingConfig, group_name="Path Sampling")
-        populate_from_dataclass(parser, MDConfig, group_name="Sampling & MD")
-        populate_from_dataclass(parser, SteeringConfig, group_name="Steering")
-        populate_from_dataclass(parser, CommittorConfig, group_name="Committor Rewards")
-        populate_from_dataclass(parser, VampBinConfig, group_name="VAMP-Bin Bonus")
-        populate_from_dataclass(parser, MSMIGConfig, group_name="MSM Information Gain")
-        populate_from_dataclass(parser, Geom2VecConfig, group_name="Geom2Vec")
-        populate_from_dataclass(parser, IOConfig, group_name="I/O & Checkpointing")
+        _pop(cls, "Core & RL")
+        _pop(PathSamplingConfig, "Path Sampling")
+        _pop(MDConfig, "Sampling & MD")
+        _pop(SteeringConfig, "Steering")
+        _pop(CommittorConfig, "Committor Rewards")
+        _pop(VampBinConfig, "VAMP-Bin Bonus")
+        _pop(MSMIGConfig, "MSM Information Gain")
+        _pop(Geom2VecConfig, "Geom2Vec")
+        _pop(IOConfig, "I/O & Checkpointing")
 
         # All args are now auto-generated from dataclass fields + CLI_META.
 

@@ -116,34 +116,46 @@ def _flatten_yaml(data: Dict[str, Any]) -> Dict[str, Any]:
     return flat
 
 
+def mode_to_flags(mode: str) -> Dict[str, Any]:
+    """Map a ``mode`` shortcut to the concrete boolean flags it sets.
+
+    Shared single source of truth for the YAML ``training.mode`` shortcut and
+    the CLI ``--mode`` option. Unknown / ``pretrain`` modes return no flags
+    (pretrain is a separate subcommand).
+    """
+    m = str(mode or "").strip().lower()
+    if m == "generative":
+        return {"generative_loop": True}
+    if m in ("path-sampling", "path_sampling", "path"):
+        return {"generative_loop": True, "path_sampling": True}
+    if m == "standard":
+        return {"generative_loop": False}
+    return {}
+
+
+def solvent_to_flags(value: str) -> Dict[str, Any]:
+    """Map a ``solvent`` shortcut to the concrete implicit/explicit flags.
+
+    Shared by the YAML ``md.solvent`` shortcut and the CLI ``--solvent`` option.
+    """
+    s = str(value or "").strip().lower()
+    if s == "explicit":
+        return {"explicit_solvent": True, "implicit_solvent": False}
+    if s in ("implicit", "gbsa", "gbn2"):
+        return {"implicit_solvent": True, "explicit_solvent": False}
+    return {}
+
+
 def _resolve_mode(flat: Dict[str, Any]) -> None:
-    """Resolve the 'mode' shortcut to concrete flags."""
-    mode = str(flat.pop("_mode", "")).strip().lower()
-    if not mode:
-        return
-    if mode == "generative":
-        flat.setdefault("generative_loop", True)
-    elif mode in ("path-sampling", "path_sampling", "path"):
-        flat.setdefault("generative_loop", True)
-        flat.setdefault("path_sampling", True)
-    elif mode == "standard":
-        flat.setdefault("generative_loop", False)
-    elif mode == "pretrain":
-        # Pretrain mode is handled by the pretrain subcommand, not a flag.
-        pass
+    """Resolve the YAML 'mode' shortcut to concrete flags (does not override)."""
+    for key, value in mode_to_flags(flat.pop("_mode", "")).items():
+        flat.setdefault(key, value)
 
 
 def _resolve_solvent(flat: Dict[str, Any]) -> None:
-    """Resolve the 'solvent' shortcut to concrete flags."""
-    solvent = str(flat.pop("_solvent_type", "")).strip().lower()
-    if not solvent:
-        return
-    if solvent == "explicit":
-        flat["explicit_solvent"] = True
-        flat["implicit_solvent"] = False
-    elif solvent in ("implicit", "gbsa", "gbn2"):
-        flat["implicit_solvent"] = True
-        flat["explicit_solvent"] = False
+    """Resolve the YAML 'solvent' shortcut to concrete flags."""
+    for key, value in solvent_to_flags(flat.pop("_solvent_type", "")).items():
+        flat[key] = value
 
 
 def _validate_yaml_keys(data: Dict[str, Any], strict: bool) -> None:

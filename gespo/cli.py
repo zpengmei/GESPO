@@ -177,11 +177,31 @@ def _save_effective_config(args: argparse.Namespace) -> None:
 # Subcommand: train
 # ---------------------------------------------------------------------------
 
+def _apply_mode_solvent_shortcuts(args: argparse.Namespace) -> None:
+    """Expand the CLI ``--mode`` / ``--solvent`` shortcuts into concrete flags.
+
+    Explicitly-passed boolean flags win (with the None-sentinel default, an
+    explicit flag is non-None while an unset one is None). The shim attributes
+    are removed so they never reach TrainingConfig (which has no such fields).
+    """
+    from .config.loader import mode_to_flags, solvent_to_flags
+
+    for attr, to_flags in (("mode", mode_to_flags), ("solvent", solvent_to_flags)):
+        value = getattr(args, attr, None)
+        if value:
+            for flag, flag_value in to_flags(value).items():
+                if getattr(args, flag, None) is None:  # not explicitly set
+                    setattr(args, flag, flag_value)
+        if hasattr(args, attr):
+            delattr(args, attr)
+
+
 def _cmd_train(args: argparse.Namespace) -> None:
     """Run GESPO training."""
     from .training import train
     from .utils.config import RunConfigurer
 
+    _apply_mode_solvent_shortcuts(args)
     args = _load_config_from_args(args)
     _resolve_device(args)
 
@@ -288,13 +308,31 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # --- gespo train ---
+    # `--help` shows only the curated essential flags; `--help-all` shows every
+    # flag. Detect it up front so the parser is built with full help text when
+    # requested (SUPPRESS is baked in at add_argument time, so the choice must be
+    # made before populating).
+    _show_advanced = "--help-all" in sys.argv
     train_parser = subparsers.add_parser(
         "train", help="Run GESPO training",
         formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "" if _show_advanced else
+            "Showing essential options only. Run 'gespo train --help-all' to see "
+            "all options."
+        ),
     )
     train_parser.add_argument("--config", "-c", default="", metavar="YAML",
         help="Path to YAML config file. CLI flags override YAML values.")
-    TrainingConfig.populate_parser(train_parser)
+    train_parser.add_argument("--help-all", action="help",
+        help="Show all options, including advanced ones, and exit.")
+    train_parser.add_argument("--mode", choices=["generative", "path-sampling", "standard"],
+        default=None,
+        help="Training mode shortcut: sets --generative-loop / --path-sampling.")
+    train_parser.add_argument("--solvent", choices=["explicit", "implicit", "gbsa", "gbn2"],
+        default=None,
+        help="Solvent shortcut: sets --implicit-solvent / --explicit-solvent.")
+    TrainingConfig.populate_parser(train_parser, show_advanced=_show_advanced)
 
     # --- gespo pretrain ---
     pretrain_parser = subparsers.add_parser("pretrain", help="Pretrain TorsionAR policy")
