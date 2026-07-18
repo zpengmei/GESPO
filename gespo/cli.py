@@ -49,6 +49,26 @@ def _preflight_compatibility_warnings(args: argparse.Namespace) -> None:
         pass
 
 
+def _preflight_pdb_present(args: argparse.Namespace) -> None:
+    """Require a structure for non-toy runs.
+
+    ``pdb`` no longer silently defaults to a phantom ``chignolin.pdb``; fail
+    early with a clear message instead of a downstream file-not-found.
+    """
+    is_toy = bool(
+        getattr(args, "toy_phi_psi_loop", False)
+        or getattr(args, "toy_phi_psi_dga_loop", False)
+    )
+    if is_toy:
+        return
+    pdb = str(getattr(args, "pdb", "") or "").strip()
+    if not pdb:
+        raise ValueError(
+            "No structure provided: set --pdb (or endpoints.pdb_a in YAML) to a PDB file. "
+            "There is no default structure."
+        )
+
+
 def _preflight_endpoint_validation(args: argparse.Namespace) -> None:
     """Validate endpoint A/B PDBs when provided."""
     pdb_a = str(getattr(args, "pdb", "") or "").strip()
@@ -172,6 +192,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
     RunConfigurer(args, log_dir=config_log_dir).print_summary()
 
     _save_effective_config(args)
+    _preflight_pdb_present(args)
     _preflight_endpoint_validation(args)
     _snapshot_endpoint_pdbs(args)
     _preflight_compatibility_warnings(args)
@@ -232,7 +253,7 @@ def _cmd_config(args: argparse.Namespace) -> None:
             sys.exit(1)
         from .config.loader import load_config
         try:
-            config = load_config(config_path)
+            config = load_config(config_path, strict=bool(getattr(args, "strict", False)))
             print(f"Config loaded successfully from {config_path}")
             print(f"  mode: {'path-sampling' if config.path_sampling else ('generative' if config.generative_loop else 'standard')}")
             print(f"  pdb: {config.pdb}")
@@ -318,6 +339,8 @@ def main():
         help="Training mode for the template")
     validate_parser = config_sub.add_parser("validate", help="Validate a config file")
     validate_parser.add_argument("config_file", help="Path to YAML config file")
+    validate_parser.add_argument("--strict", action="store_true",
+        help="Raise on unknown config keys/sections instead of warning.")
 
     # --- gespo bootstrap ---
     subparsers.add_parser("bootstrap", help="Bootstrap utilities (run: python -m gespo.bootstrap_cli)")

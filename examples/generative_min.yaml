@@ -32,8 +32,8 @@ md:
 
 geom2vec:
   checkpoint: path/to/geom2vec.pt  # REQUIRED — geom2vec representation checkpoint
-  lagtime: 150
-  dim: 10
+  lagtime: 20
+  dim: 2
   vamp_epochs: 10
 
 policy:

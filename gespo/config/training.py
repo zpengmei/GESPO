@@ -36,11 +36,13 @@ class TrainingConfig:
     """
 
     # ── Core ────────────────────────────────────────────────────────────
-    grp_size: int
-    episodes: int
-    platform: str
-    gen_device: str
-    pdb: str
+    # Defaults here are the single source of truth for both the CLI and
+    # programmatic/from_dict use (the CLI no longer carries default_override).
+    grp_size: int = 16
+    episodes: int = 20
+    platform: str = "CUDA"
+    gen_device: str = "cuda:0"
+    pdb: str = ""
     pdb_a: str = ""
     pdb_b: str = ""
 
@@ -82,7 +84,7 @@ class TrainingConfig:
     reset_policy_on_projector_refresh: bool = True
 
     # ── Retrieval ───────────────────────────────────────────────────────
-    retrieval_candidates: int = 2048
+    retrieval_candidates: int = 4096
     retrieval_topk: int = 32
     retrieval_max_resamples: int = 3
     retrieval_cache_max_frames: int = 0
@@ -103,7 +105,7 @@ class TrainingConfig:
 
     # ── Anchoring ───────────────────────────────────────────────────────
     anchoring_round: bool = True
-    anchoring_steps: int = 0  # 0 → use n_md_steps
+    anchoring_steps: int = 100000  # explicit; runtime uses n_md_steps only if set to 0
     anchoring_num_trajs: int = 0
     anchoring_pdb_only: bool = False
     anchoring_write_full_dcd: Optional[bool] = None
@@ -159,11 +161,11 @@ class TrainingConfig:
     # ── CLI metadata for auto-generated argparse ────────────────────────
     CLI_META: ClassVar[dict] = {
         # Core
-        "grp_size": {"help": "Number of parallel walkers (batch size).", "default_override": 16},
-        "episodes": {"help": "Total RL training episodes.", "default_override": 20},
-        "platform": {"help": "Simulation platform (CUDA/CPU).", "default_override": "CUDA"},
-        "gen_device": {"help": "Device for generator/policy.", "default_override": "cuda:0"},
-        "pdb": {"help": "Endpoint A PDB file (topology + initial coords).", "default_override": "chignolin.pdb", "aliases": ["--pdb-a"]},
+        "grp_size": "Number of parallel walkers (batch size).",
+        "episodes": "Total RL training episodes.",
+        "platform": "Simulation platform (CUDA/CPU).",
+        "gen_device": "Device for generator/policy.",
+        "pdb": {"help": "Endpoint A PDB file (topology + initial coords).", "aliases": ["--pdb-a"]},
         "pdb_a": {"skip": True},
         "pdb_b": "Endpoint B PDB file (path sampling target; requires --path-sampling).",
         # Loop selection
@@ -221,10 +223,7 @@ class TrainingConfig:
             "no_help": "Keep start policy across projector refreshes.",
         },
         # Retrieval
-        "retrieval_candidates": {
-            "help": "Candidate pool size for retrieval-based starts (0=all cached frames).",
-            "default_override": 4096,
-        },
+        "retrieval_candidates": "Candidate pool size for retrieval-based starts (0=all cached frames).",
         "retrieval_topk": "Top-K nearest candidates for retrieval sampling.",
         "retrieval_max_resamples": "Max torsion resamples per walker for out-of-support.",
         "retrieval_cache_max_frames": "Max frames in retrieval cache (0=unlimited).",
@@ -264,10 +263,7 @@ class TrainingConfig:
             "help": "Run initial anchoring round before training.",
             "no_help": "Disable anchoring round.",
         },
-        "anchoring_steps": {
-            "help": "MD steps per anchoring trajectory (0=use n_md_steps).",
-            "default_override": 100000,
-        },
+        "anchoring_steps": "MD steps per anchoring trajectory (0=use n_md_steps).",
         "anchoring_num_trajs": "Max anchoring trajectories (0=one per walker).",
         "anchoring_pdb_only": {
             "help": "Anchor from PDB(s) only, no generator-based starts.",
@@ -461,7 +457,13 @@ class TrainingConfig:
             sub_field_names = {f.name for f in fields(sub_cls) if not f.name.startswith("_")}
             # Exclude ClassVar-like entries (CLI_META etc.)
             sub_field_names.discard("CLI_META")
-            sub_cfg = {name: getattr(args, name) for name in sub_field_names if hasattr(args, name)}
+            # Skip None values (the "unset" sentinel from the CLI) so the
+            # dataclass field default supplies the value.
+            sub_cfg = {
+                name: getattr(args, name)
+                for name in sub_field_names
+                if hasattr(args, name) and getattr(args, name) is not None
+            }
             sub_configs[attr_name] = sub_cls(**sub_cfg)
             consumed_names.update(sub_field_names)
 
@@ -475,9 +477,14 @@ class TrainingConfig:
         except Exception:
             md_cfg.record_stride = 10
 
-        # Build TrainingConfig's own fields.
+        # Build TrainingConfig's own fields. Skip None (the CLI "unset"
+        # sentinel) so the dataclass field default supplies the value.
         field_names = {f.name for f in fields(cls)}
-        cfg = {name: getattr(args, name) for name in field_names if hasattr(args, name)}
+        cfg = {
+            name: getattr(args, name)
+            for name in field_names
+            if hasattr(args, name) and getattr(args, name) is not None
+        }
         # Remove sub-config field names that were consumed above.
         for name in consumed_names:
             cfg.pop(name, None)
