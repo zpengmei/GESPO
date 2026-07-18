@@ -17,6 +17,7 @@ from gespo.rewards.loo_vamp import LOOVAMPRewards
 from gespo.training.components.retrieval_manager import RetrievalManager
 from gespo.training.components.policy_io import save_torsion_ar_policy
 from gespo.loops._helpers import iter_history_trajs as _shared_iter_history_trajs
+from gespo.utils.log import epoch_phase
 from gespo.analysis.metrics import compute_globals_from_coords as _compute_globals_impl
 from gespo.rewards.vamp_bin import VampBinBonus
 from gespo.training.components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
@@ -1430,6 +1431,7 @@ def train(args: argparse.Namespace) -> None:
         epoch_start_time = time.time()
 
         # A. Refresh projector (every N epochs)
+        epoch_phase(ep + 1, config.episodes, "A")
         refresh_interval = int(getattr(config, "pca_refresh_interval", 1) or 1)
         model_ready = geom2vec_mgr.is_trained()
         if refresh_interval <= 0:
@@ -1474,7 +1476,7 @@ def train(args: argparse.Namespace) -> None:
                 print(f"[Retrieval Cache] Warning: cache cap failed ({exc_reb})")
 
         # B. Sample torsion starts from autoregressive policy
-        print(f"[Epoch {ep+1}] Phase B: Sampling torsion starts from TorsionAR policy...")
+        epoch_phase(ep + 1, config.episodes, "B", "Sampling torsion starts from TorsionAR policy")
 
         rand_mask = torch.zeros(config.grp_size, dtype=torch.bool, device=torch_device)
 
@@ -2106,6 +2108,7 @@ def train(args: argparse.Namespace) -> None:
             epoch_dir = Path(config.snapshot_dir) / f"epoch_{ep+1:04d}"
             epoch_dir.mkdir(parents=True, exist_ok=True)
 
+        epoch_phase(ep + 1, config.episodes, "C")
         current_epoch_data, reward_tensors, metrics, active_mask_list = sampler.sample_epoch(
             ep,
             starts,
@@ -2175,6 +2178,7 @@ def train(args: argparse.Namespace) -> None:
             print(f"[Retrieval Cache] Warning: append failed: {exc_append}")
 
         # D. Compute LOO VAMP rewards from the softmax VAMP lobe outputs (probabilities).
+        epoch_phase(ep + 1, config.episodes, "D")
         loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
         loo_vamp_contributions = None
         vamp_bin_bonus = None
@@ -2662,6 +2666,7 @@ def train(args: argparse.Namespace) -> None:
                     traceback.print_exc()
                     loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
         # E. Policy Update (GRPO) for torsion AR starts
+        epoch_phase(ep + 1, config.episodes, "E")
         if len(current_epoch_data) > 0:
             hill_data = None
 
@@ -2875,7 +2880,7 @@ def train(args: argparse.Namespace) -> None:
         else:
             update_stats = {}
 
-        print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
+        epoch_phase(ep + 1, config.episodes, "F", "Logging & checkpointing")
         print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
 
         if rollout_token_entropy is not None and rollout_token_entropy.size > 0:
