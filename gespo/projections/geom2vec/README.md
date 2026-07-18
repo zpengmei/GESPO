@@ -1,4 +1,4 @@
-# `geom2vec_backbone` (GESPO)
+# `gespo.projections.geom2vec` (GESPO)
 
 Core building blocks for using **geom2vec embeddings** as the default VAMP-state backbone in GESPO.
 
@@ -15,7 +15,7 @@ Core building blocks for using **geom2vec embeddings** as the default VAMP-state
 ```python
 import mdtraj as md
 import numpy as np
-from gespo.training.geom2vec_backbone import (
+from gespo.projections.geom2vec import (
     EmbeddingCache,
     Geom2VecTopologyCache,
     TimeLaggedIndexDataset,
@@ -56,7 +56,7 @@ ds = TimeLaggedIndexDataset(
 ## Bootstrapping from DCDs (writes next to the DCDs)
 
 ```python
-from gespo.training.geom2vec_backbone import bootstrap_cache_from_dcd_dir
+from gespo.projections.geom2vec import bootstrap_cache_from_dcd_dir
 
 summary = bootstrap_cache_from_dcd_dir(
     model=rep_model,
@@ -75,7 +75,7 @@ print("computed", len(summary["computed"]), "skipped", len(summary["skipped"]))
 ## Training the geom2vec lobe (index-based pairs)
 
 ```python
-from gespo.training.geom2vec_backbone import EmbeddingCache, train_vamp_lobe_from_cache
+from gespo.projections.geom2vec import EmbeddingCache, train_vamp_lobe_from_cache
 
 cache = EmbeddingCache("/path/to/run_snaps")
 trained = train_vamp_lobe_from_cache(
@@ -92,7 +92,7 @@ trained = train_vamp_lobe_from_cache(
 ## Projector adapter
 
 ```python
-from gespo.training.geom2vec_backbone import Geom2VecVAMPProjector
+from gespo.projections.geom2vec import Geom2VecVAMPProjector
 
 projector = Geom2VecVAMPProjector(
     rep_model=rep_model,
@@ -115,7 +115,7 @@ labels = projector.assign_states(probs)
 
 ## Using in GESPO (discrete-start loop)
 
-The standard discrete-start loop (`gespo.training.loop`) supports a `geom2vec_vamp` projection mode that:
+The discrete-start loop (`gespo.loops._legacy.discrete`) supports a `geom2vec_vamp` projection mode that:
 
 - infers and caches geom2vec embeddings as `float32` `*.pt` next to the per-walker `*.dcd` files under `--snapshot-dir`
 - trains a geom2vec `Lobe` online with a VAMP objective
@@ -124,11 +124,14 @@ The standard discrete-start loop (`gespo.training.loop`) supports a `geom2vec_va
 Minimal flags:
 
 ```bash
-python -m gespo.cli \
-  --projection=geom2vec_vamp \
+python -m gespo train \
+  --projection geom2vec_vamp \
   --geom2vec-ckpt /path/to/geom2vec_rep.ckpt \
   --geom2vec-cache-root /path/to/run_snaps \
   --geom2vec-embed-stride 2 \
-  --tica-dim 16 \
-  --tica-lagtime 150
+  --geom2vec-dim 16 \
+  --geom2vec-lagtime 150
 ```
+
+(`--tica-dim` / `--n-states` are accepted aliases of `--geom2vec-dim`; there is
+no `--tica-lagtime` — use `--geom2vec-lagtime`.)

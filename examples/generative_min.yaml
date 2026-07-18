@@ -1,0 +1,52 @@
+# GESPO — minimal generative-loop config.
+#
+# This mirrors `python -m gespo config template --mode generative`.
+# Run it with:
+#
+#     python -m gespo train --config examples/generative_min.yaml
+#
+# There is no bundled structure — you MUST supply your own PDB and geom2vec
+# checkpoint (the two REQUIRED placeholders below). Use add_hydrogens_pdbfixer.py
+# to add hydrogens to a raw PDB first.
+#
+# CLI flags override any value here, e.g.:
+#     python -m gespo train --config examples/generative_min.yaml --episodes 50
+
+endpoints:
+  pdb_a: your_protein.pdb          # REQUIRED — path to your (hydrogen-added) PDB
+  # pdb_b: endpoint_B.pdb          # uncomment (and set mode: path-sampling) for A→B path sampling
+
+training:
+  mode: generative
+  episodes: 20
+  grp_size: 8
+  platform: CUDA
+  gen_device: "cuda:0"
+
+md:
+  n_md_steps: 10000
+  record_stride: 10
+  temperature: 300.0
+  solvent: explicit                # explicit | implicit
+  ionic_strength_m: 0.15
+
+geom2vec:
+  checkpoint: path/to/geom2vec.pt  # REQUIRED — geom2vec representation checkpoint
+  lagtime: 150
+  dim: 10
+  vamp_epochs: 10
+
+policy:
+  torsion_ar_mode: backbone
+  # torsion_ar_checkpoint: ''      # resume/pretrained TorsionAR checkpoint
+  lr: 1.0e-4
+
+rewards:
+  loo_vamp_reward_weight: 1.0
+  vamp_bin_entropy_coef: -1.0      # < 0 ties to ent_coef
+  msm_ig_reward_coef: 0.0
+
+io:
+  snapshot_dir: runs/my_experiment
+  checkpoint_interval: 5
+  resume: false

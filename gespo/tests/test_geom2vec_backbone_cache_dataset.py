@@ -15,8 +15,10 @@ _openmm_unit.Quantity = type("Quantity", (), {})
 sys.modules["openmm.unit"] = _openmm_unit
 _openmm.unit = _openmm_unit
 
-# Add project root to path (mirrors existing tests)
-sys.path.append("/project/dinner/zpengmei/GESPO")
+# Ensure repo root is importable as a package root (pytest may not add it).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from gespo.projections.geom2vec.cache import EmbeddingCache
 from gespo.projections.geom2vec.dataset import PairIndex, TimeLaggedIndexDataset

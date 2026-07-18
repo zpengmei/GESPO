@@ -64,6 +64,12 @@ def pretrain_torsion_ar(
     stride: int = 1,
     global_token_set: str = "rmsd_e2e",
     torsion_mode: str = "backbone",
+    ligand_smiles: str = "",
+    reweight_zenodo_dir: str = "",
+    reweight_ref_pdb: str = "",
+    reweight_labels_npz: str = "",
+    reweight_alpha: float = 1.0,
+    pocket_ref_pdb: str = "",
 ) -> None:
     """Pretrain a TorsionAR policy from trajectory data.
 
@@ -75,6 +81,19 @@ def pretrain_torsion_ar(
         Output path for the pretrained checkpoint.
     pdb_path : str
         PDB file for topology.
+    ligand_smiles : str, optional
+        SMILES of the ligand (enables RDKit-based rotatable-bond detection).
+    reweight_zenodo_dir, reweight_ref_pdb, reweight_labels_npz, reweight_alpha : optional
+        Macrostate/cluster importance-reweighting controls (see the CLI
+        ``gespo pretrain --help`` for details).
+    pocket_ref_pdb : str, optional
+        Reference PDB with a bound ligand for pocket auto-detection when
+        ``pdb_path`` is an apo structure.
+
+    Notes
+    -----
+    This is a faithful superset of the ``gespo pretrain`` CLI: every parameter
+    the CLI forwards is accepted here with identical defaults.
     """
     from .training.pretrain_torsion_ar import pretrain_torsion_ar as _pretrain
 
@@ -90,4 +109,10 @@ def pretrain_torsion_ar(
         stride=stride,
         global_token_set=global_token_set,
         torsion_mode=torsion_mode,
+        ligand_smiles=ligand_smiles,
+        reweight_zenodo_dir=reweight_zenodo_dir,
+        reweight_ref_pdb=reweight_ref_pdb,
+        reweight_labels_npz=reweight_labels_npz,
+        reweight_alpha=reweight_alpha,
+        pocket_ref_pdb=pocket_ref_pdb,
     )

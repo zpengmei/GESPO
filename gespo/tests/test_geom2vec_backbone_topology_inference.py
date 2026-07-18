@@ -1,5 +1,6 @@
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -14,7 +15,10 @@ _openmm_unit.Quantity = type("Quantity", (), {})
 sys.modules["openmm.unit"] = _openmm_unit
 _openmm.unit = _openmm_unit
 
-sys.path.append("/project/dinner/zpengmei/GESPO")
+# Ensure repo root is importable as a package root (pytest may not add it).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import mdtraj as md
 
