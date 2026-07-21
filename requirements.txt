@@ -1,8 +1,14 @@
 mdtraj
 numpy
 torch
+pyyaml
 matplotlib
 scipy
 scikit-learn
 tqdm
+requests
 openmm
+# Ligand parameterization (protein-ligand runs); best via conda-forge:
+#   conda install -c conda-forge openmmforcefields openff-toolkit
+# geom2vec backbone (separate package; ships pretrained checkpoints):
+#   pip install git+https://github.com/zpengmei/geom2vec.git

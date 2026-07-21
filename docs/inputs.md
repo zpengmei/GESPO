@@ -47,10 +47,19 @@ export GEOM2VEC_SRC=/path/to/geom2vec/src
 **Get a checkpoint.** The geom2vec repo **ships** pretrained backbones in its
 `checkpoints/` folder — no training required. The examples use
 `tensornet_l3_h64_rbf32_r5.pth` (TensorNet, 3 layers, hidden 64, 32 RBFs, 5 Å
-cutoff). Point `--geom2vec-ckpt` (YAML `geom2vec.checkpoint`) at the `.pth`:
+cutoff).
+
+**Auto-detection.** For `--projection geom2vec_vamp`, GESPO **auto-detects** a
+checkpoint if you don't pass `--geom2vec-ckpt`. It resolves, in order:
+`$GEOM2VEC_CKPT` → `<prefer>.pth` in a known checkpoints dir → any `tensornet_*.pth`
+→ any `*.pth`, searching `$GEOM2VEC_SRC/../checkpoints`, the pip-installed geom2vec
+package's `checkpoints/`, and an `apps/geom2vec/checkpoints` checkout near the repo.
+The run logs the choice (`[Preflight] Auto-detected geom2vec checkpoint: …`). To
+pin one explicitly:
 
 ```bash
 export GEOM2VEC_CKPT=/path/to/geom2vec/checkpoints/tensornet_l3_h64_rbf32_r5.pth
+# or per-run:  --geom2vec-ckpt <path>   (a bare filename is resolved against the known dirs)
 ```
 
 GESPO reads the architecture from the checkpoint **filename**

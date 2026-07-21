@@ -50,13 +50,37 @@ orders of magnitude less simulation time than direct MD.
 New here? Read [`docs/overview.md`](docs/overview.md), then run a recipe in
 [`examples/`](examples/). Full docs: [`docs/`](docs/).
 
+## Installation
+
+GESPO needs Python ≥ 3.10, an **OpenMM** MD environment, and the separate
+**geom2vec** package (which also ships the pretrained backbones).
+
+```bash
+# 1. An environment with OpenMM + ligand parameterization (conda-forge recommended)
+conda create -n gespo python=3.11 -y && conda activate gespo
+conda install -c conda-forge openmm openmmforcefields openff-toolkit mdtraj -y
+
+# 2. GESPO
+git clone https://github.com/zpengmei/GESPO.git
+cd GESPO
+pip install -e .                 # core deps (numpy, torch, mdtraj, pyyaml, …)
+
+# 3. geom2vec — separate package; needs the PyTorch Geometric stack
+git clone https://github.com/zpengmei/geom2vec.git
+cd geom2vec && pip install -e .  # ships pretrained checkpoints/ backbones
+```
+
+GESPO **auto-detects a geom2vec checkpoint** from the geom2vec install (or from
+`$GEOM2VEC_CKPT`), so `--geom2vec-ckpt` is optional once geom2vec is installed;
+pass it (or `$GEOM2VEC_SRC`) to override. Full setup and how discovery works:
+[`docs/inputs.md`](docs/inputs.md). If you didn't `pip install` geom2vec, point
+GESPO at the checkout with `export GEOM2VEC_SRC=/path/to/geom2vec/src`.
+
 ## Quickstart
 
-You provide a **prepared PDB** and a **geom2vec backbone checkpoint** — geom2vec is
-a separate package (`pip install -e .` from
-[github.com/zpengmei/geom2vec](https://github.com/zpengmei/geom2vec); it ships the
-pretrained checkpoints). `gespo seed` produces the initial corpus. Full setup:
-[`docs/inputs.md`](docs/inputs.md).
+After [installation](#installation) you only need a **prepared PDB** — the geom2vec
+checkpoint is auto-detected, and `gespo seed` produces the initial corpus. Inputs
+in detail: [`docs/inputs.md`](docs/inputs.md).
 
 ```bash
 # 1. seed: short biased MD -> seeds/walker_*/production.dcd
@@ -67,10 +91,9 @@ python -m gespo seed metad --pdb protein.pdb --cv-set folding \
 python -m gespo pretrain --pdb protein.pdb --source seeds/walker_1,seeds/walker_2,seeds/walker_3,seeds/walker_4 \
     --out torsion_ar.pt --global-token-set rmsd_e2e_rg
 
-# 3. train: the GRPO post-training loop
+# 3. train: the GRPO post-training loop  (geom2vec ckpt auto-detected; --geom2vec-ckpt to override)
 python -m gespo train --pdb protein.pdb --generative-loop --implicit-solvent \
-    --torsion-ar-checkpoint torsion_ar.pt \
-    --projection geom2vec_vamp --geom2vec-ckpt /path/to/backbone.pth \
+    --torsion-ar-checkpoint torsion_ar.pt --projection geom2vec_vamp \
     --replay-only-dcd-dir seeds/walker_1,seeds/walker_2,seeds/walker_3,seeds/walker_4 \
     --snapshot-dir runs/round1
 ```

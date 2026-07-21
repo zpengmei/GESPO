@@ -74,6 +74,36 @@ def _preflight_pdb_present(args: argparse.Namespace) -> None:
         )
 
 
+def _preflight_geom2vec_checkpoint(args: argparse.Namespace) -> None:
+    """Auto-resolve a geom2vec checkpoint for the ``geom2vec_vamp`` projection.
+
+    If ``--geom2vec-ckpt`` is unset (or a bare filename), locate a checkpoint from
+    the geom2vec install / ``$GEOM2VEC_CKPT`` and fill it in, so a run does not fail
+    with "geom2vec checkpoint required" just because the path was not spelled out.
+    """
+    if str(getattr(args, "projection", "") or "") != "geom2vec_vamp":
+        return
+    if bool(getattr(args, "toy_phi_psi_loop", False)
+            or getattr(args, "toy_phi_psi_dga_loop", False)):
+        return
+    from .utils.geom2vec_paths import resolve_geom2vec_checkpoint
+
+    current = str(getattr(args, "geom2vec_checkpoint", "") or "").strip()
+    resolved = resolve_geom2vec_checkpoint(current)
+    if resolved and resolved != current:
+        args.geom2vec_checkpoint = resolved
+        if current:
+            print(f"[Preflight] Resolved geom2vec checkpoint '{current}' -> {resolved}", flush=True)
+        else:
+            print(f"[Preflight] Auto-detected geom2vec checkpoint: {resolved}", flush=True)
+    elif not resolved and not current:
+        print(
+            "[Preflight] Warning: projection=geom2vec_vamp but no geom2vec checkpoint "
+            "was found. Set --geom2vec-ckpt or $GEOM2VEC_CKPT (see docs/inputs.md).",
+            flush=True,
+        )
+
+
 def _preflight_endpoint_validation(args: argparse.Namespace) -> None:
     """Validate endpoint A/B PDBs when provided."""
     pdb_a = str(getattr(args, "pdb", "") or "").strip()
@@ -209,6 +239,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
     _apply_mode_solvent_shortcuts(args)
     args = _load_config_from_args(args)
     _resolve_device(args)
+    _preflight_geom2vec_checkpoint(args)
 
     log_file = os.path.join(args.snapshot_dir, "gespo.log") if getattr(args, "snapshot_dir", "") else "gespo.log"
     _setup_logging(log_file)
