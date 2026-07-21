@@ -1,9 +1,10 @@
 """CLI entrypoint with subcommands for GESPO.
 
 Usage:
+    gespo seed metad --pdb a.pdb --out-dir seeds/  # generate seed trajectories
+    gespo pretrain --pdb a.pdb --source seeds/ --out r0.pt  # TorsionAR pretraining
     gespo train --config config.yaml              # training from YAML
     gespo train --pdb a.pdb --generative-loop ...  # training from CLI flags
-    gespo pretrain --pdb a.pdb --source dcd_dir/   # TorsionAR pretraining
     gespo config template --mode generative        # generate config template
     gespo config validate config.yaml              # validate a config file
     gespo bootstrap rmsd-bias --help               # bootstrap utilities
@@ -393,13 +394,19 @@ def main():
     validate_parser.add_argument("--strict", action="store_true",
         help="Raise on unknown config keys/sections instead of warning.")
 
+    # --- gespo seed ---
+    # Seed generation lives in gespo/seed (dependency-light parser build).
+    from .seed.cli import build_seed_subparser
+    build_seed_subparser(subparsers)
+
     # --- gespo bootstrap ---
     subparsers.add_parser("bootstrap", help="Bootstrap utilities (run: python -m gespo.bootstrap_cli)")
 
     # --- Backward compat: if no subcommand, treat as 'train' ---
     # Check if the first positional arg is a known subcommand.
     # If not (e.g., user passed --pdb directly), insert 'train' as the subcommand.
-    if len(sys.argv) > 1 and sys.argv[1] not in ("train", "pretrain", "config", "bootstrap", "-h", "--help"):
+    _KNOWN_COMMANDS = ("train", "pretrain", "config", "seed", "bootstrap", "-h", "--help")
+    if len(sys.argv) > 1 and sys.argv[1] not in _KNOWN_COMMANDS:
         sys.argv.insert(1, "train")
 
     args = parser.parse_args()
@@ -414,6 +421,9 @@ def main():
         _cmd_pretrain(args)
     elif args.command == "config":
         _cmd_config(args)
+    elif args.command == "seed":
+        from .seed.cli import cmd_seed
+        cmd_seed(args, argv=sys.argv)
     elif args.command == "bootstrap":
         print("Run bootstrap utilities with: python -m gespo.bootstrap_cli --help")
     else:

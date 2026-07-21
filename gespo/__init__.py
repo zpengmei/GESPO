@@ -11,11 +11,15 @@ Typical usage::
     # Train from a YAML file, a dict, or a TrainingConfig
     gespo.train("config.yaml")
 
-    # Pretrain a TorsionAR policy from trajectory data
+    # Generate seed trajectories (initial data), then pretrain from them
+    gespo.generate_seeds(
+        method="metad", pdb="holo.pdb", out_dir="seeds/",
+        cv_set="holo", ligand_smiles="c1ccc(cc1)C(=N)N", n_walkers=4,
+    )
     gespo.pretrain_torsion_ar(
-        source_path="history_dcds/",
+        source_path="seeds/",
         out_path="checkpoints/r0.pt",
-        pdb_path="endpoint_A.pdb",
+        pdb_path="holo.pdb",
     )
 
     # Build/inspect configuration
@@ -29,6 +33,7 @@ from typing import TYPE_CHECKING
 __all__ = [
     "train",
     "pretrain_torsion_ar",
+    "generate_seeds",
     "TrainingConfig",
     "load_config",
     "save_config",
@@ -41,6 +46,7 @@ __all__ = [
 _LAZY_EXPORTS = {
     "train": ("gespo.api", "train"),
     "pretrain_torsion_ar": ("gespo.api", "pretrain_torsion_ar"),
+    "generate_seeds": ("gespo.seed", "generate_seeds"),
     "TrainingConfig": ("gespo.config", "TrainingConfig"),
     "load_config": ("gespo.config", "load_config"),
     "save_config": ("gespo.config", "save_config"),
@@ -86,6 +92,7 @@ if TYPE_CHECKING:
     # Give static analyzers / IDEs the real symbols without triggering the
     # heavy imports at runtime.
     from gespo.api import pretrain_torsion_ar, train
+    from gespo.seed import generate_seeds
     from gespo.config import (
         TrainingConfig,
         generate_template,
