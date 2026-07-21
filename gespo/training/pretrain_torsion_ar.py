@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import mdtraj as md
 import numpy as np
@@ -15,6 +15,16 @@ from ..utils.adk_metrics import (
     compute_adk_global_values_from_xyz,
 )
 from ..utils.selection import infer_protein_atom_indices, is_subset_selection
+# Token-set / torsion-mode names + validators live in a dependency-light module
+# (no OpenMM/torch) so the CLI and docs can reuse them; re-exported here for
+# back-compat with existing importers.
+from .token_sets import (  # noqa: F401
+    COMMON_GLOBAL_TOKEN_SETS,
+    KNOWN_GLOBAL_TOKEN_SETS,
+    normalize_global_token_set,
+    normalize_torsion_mode,
+    validate_global_token_set,
+)
 
 
 def _split_path_list(spec: str) -> List[str]:
@@ -253,7 +263,7 @@ def _build_torsion_dataset_from_dcd(
     mask_blocks = []
     globals_blocks = []
 
-    token_set = str(global_token_set or "rmsd_e2e").strip().lower()
+    token_set = validate_global_token_set(global_token_set)
     token_set_compact = token_set.replace(" ", "")
     use_adk_domain_only = token_set in {
         "adk_domain4",
@@ -951,6 +961,9 @@ def pretrain_torsion_ar(
         source_path:  Path to .npz file with torsion data OR directory of trajectory files (.dcd/.xtc).
         out_path:     Where to save the pretrained weights (torch .pt).
     """
+    # Canonicalize legacy spellings (e.g. backbone_chi -> backbone+sidechain) so
+    # both the CLI and programmatic callers reach the tokenizer's accepted values.
+    torsion_mode = normalize_torsion_mode(torsion_mode)
     source_dirs = _split_path_list(source_path)
     if source_dirs and all(os.path.isdir(p) for p in source_dirs):
         if not pdb_path:

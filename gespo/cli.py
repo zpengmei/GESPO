@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 
 from .config import TrainingConfig
+# token_sets is dependency-light (no OpenMM/torch), so importing it to build help
+# text stays cheap. The authoritative KNOWN_GLOBAL_TOKEN_SETS (validated at run
+# time in pretrain_torsion_ar) lives there too.
+from .training.token_sets import COMMON_GLOBAL_TOKEN_SETS as _COMMON_TOKEN_SETS
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +349,17 @@ def main():
     pretrain_parser.add_argument("--lr", type=float, default=1e-4)
     pretrain_parser.add_argument("--device", default="", help="Device (e.g., cuda:0)")
     pretrain_parser.add_argument("--stride", type=int, default=1)
-    pretrain_parser.add_argument("--global-token-set", default="rmsd_e2e")
-    pretrain_parser.add_argument("--torsion-mode", default="backbone", choices=["backbone", "backbone_chi"])
+    pretrain_parser.add_argument(
+        "--global-token-set", default="rmsd_e2e",
+        help="Global CV tokens the AR policy conditions on. Common: "
+             + ", ".join(_COMMON_TOKEN_SETS)
+             + ". See docs/reference.md for the full catalog.")
+    pretrain_parser.add_argument(
+        "--torsion-mode", default="backbone",
+        choices=["backbone", "backbone+sidechain", "backbone_chi"],
+        help="Torsion tokens: 'backbone' (phi/psi/omega) or 'backbone+sidechain' "
+             "(adds chi1-chi4). 'backbone_chi' is a legacy alias for "
+             "'backbone+sidechain'.")
     pretrain_parser.add_argument("--ligand-smiles", default="",
                                   help="SMILES of the ligand (for RDKit-based rotatable bond detection). "
                                        "When provided, uses standard cheminformatics rotatable bond definition "
