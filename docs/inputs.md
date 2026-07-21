@@ -20,12 +20,42 @@ The `--pdb` you pass to `pretrain`, `seed`, and `train`.
 There is **no bundled/default structure** — `gespo train` errors clearly if `--pdb`
 (or `endpoints.pdb_a` in YAML) is missing.
 
-## 2. A geom2vec backbone checkpoint (`.pth`)
+## 2. The geom2vec package + a backbone checkpoint
 
-The `geom2vec_vamp` projection embeds each frame with a pretrained geom2vec
-representation model (e.g. a TensorNet, `tensornet_l3_h64_rbf32_r5.pth`). Point
-`--geom2vec-ckpt` (YAML `geom2vec.checkpoint`) at it. This model is **external** to
-GESPO — train or obtain it separately. See
+The `geom2vec_vamp` projection embeds each frame with a pretrained **geom2vec**
+representation model. geom2vec is a **separate package** — GESPO does not vendor it
+and does not list it in `install_requires`, so you install it alongside GESPO.
+
+**Install the package.** Clone and `pip install -e .` (it needs the PyTorch
+Geometric stack — follow the PyG install notes for your CUDA/torch build):
+
+```bash
+git clone https://github.com/zpengmei/geom2vec.git
+cd geom2vec
+pip install -e .            # or:  pip install -e .[torch,pyg,optim]
+```
+
+**How GESPO finds it.** GESPO uses a pip-installed `geom2vec` if importable;
+otherwise it searches, in order: `$GEOM2VEC_SRC`, an `apps/geom2vec/src` checkout
+next to the GESPO repo, then `/project/dinner/*/apps/geom2vec/src`. If you did not
+`pip install`, point GESPO at the checkout:
+
+```bash
+export GEOM2VEC_SRC=/path/to/geom2vec/src
+```
+
+**Get a checkpoint.** The geom2vec repo **ships** pretrained backbones in its
+`checkpoints/` folder — no training required. The examples use
+`tensornet_l3_h64_rbf32_r5.pth` (TensorNet, 3 layers, hidden 64, 32 RBFs, 5 Å
+cutoff). Point `--geom2vec-ckpt` (YAML `geom2vec.checkpoint`) at the `.pth`:
+
+```bash
+export GEOM2VEC_CKPT=/path/to/geom2vec/checkpoints/tensornet_l3_h64_rbf32_r5.pth
+```
+
+GESPO reads the architecture from the checkpoint **filename**
+(`create_model_from_checkpoint`), so keep the descriptive name. To use a different
+architecture or train your own, see the geom2vec repo and
 [`../gespo/projections/geom2vec/README.md`](../gespo/projections/geom2vec/README.md).
 
 ## 3. Seed trajectories (produced by `gespo seed`)

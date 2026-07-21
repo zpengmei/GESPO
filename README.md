@@ -52,8 +52,11 @@ New here? Read [`docs/overview.md`](docs/overview.md), then run a recipe in
 
 ## Quickstart
 
-You provide a **prepared PDB** and a **geom2vec backbone checkpoint** (see
-[`docs/inputs.md`](docs/inputs.md)); `gespo seed` produces the initial corpus.
+You provide a **prepared PDB** and a **geom2vec backbone checkpoint** — geom2vec is
+a separate package (`pip install -e .` from
+[github.com/zpengmei/geom2vec](https://github.com/zpengmei/geom2vec); it ships the
+pretrained checkpoints). `gespo seed` produces the initial corpus. Full setup:
+[`docs/inputs.md`](docs/inputs.md).
 
 ```bash
 # 1. seed: short biased MD -> seeds/walker_*/production.dcd

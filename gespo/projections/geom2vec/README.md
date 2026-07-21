@@ -2,6 +2,26 @@
 
 Core building blocks for using **geom2vec embeddings** as the default VAMP-state backbone in GESPO.
 
+## Prerequisite: install geom2vec + a backbone checkpoint
+
+geom2vec is a **separate package** (not vendored, not in GESPO's `install_requires`).
+Install it and grab a pretrained backbone:
+
+```bash
+git clone https://github.com/zpengmei/geom2vec.git
+cd geom2vec && pip install -e .        # needs the PyTorch Geometric stack
+```
+
+The repo ships pretrained checkpoints in `checkpoints/` — the GESPO examples use
+`tensornet_l3_h64_rbf32_r5.pth`. Pass it via `--geom2vec-ckpt` (the model is
+rebuilt from the checkpoint filename, so keep the descriptive name). If you did not
+`pip install`, point GESPO at the source tree with `export GEOM2VEC_SRC=/path/to/geom2vec/src`
+(GESPO also auto-detects an `apps/geom2vec/src` checkout next to this repo). Full
+input guidance: [`../../../docs/inputs.md`](../../../docs/inputs.md).
+
+The `rep_model` used in the examples below is a geom2vec model loaded via
+`geom2vec.create_model_from_checkpoint(<ckpt>.pth)`.
+
 ## What’s implemented
 
 - **Float32 file cache**: `EmbeddingCache` stores per-trajectory tensors to disk (`*.pt`) + an append-only `manifest.jsonl`.
