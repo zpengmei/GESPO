@@ -1,0 +1,94 @@
+# GESPO — holo trypsin + benzamidine, round 1, as a --config file.
+#
+# The same run as protein_ligand_trypsin/03_train_r1.sh, expressed in YAML. Run:
+#
+#   python -m gespo train --config examples/protein_ligand_trypsin.yaml \
+#       --pdb setup/trypsin_ben_explicit_ready.pdb \
+#       --geom2vec-ckpt /path/to/tensornet_l3_h64_rbf32_r5.pth \
+#       --torsion-ar-checkpoint torsion_ar_holo_pretrain.pt \
+#       --replay-only-dcd-dir metad_seeds/walker_1,metad_seeds/walker_2,metad_seeds/walker_3,metad_seeds/walker_4
+#
+# Any CLI flag overrides the matching value here. Curated sections cover the
+# common knobs; the long tail (ligand/retrieval/steering specifics) is set as
+# flat top-level keys — any dataclass field name is accepted at top level.
+
+endpoints:
+  pdb_a: setup/trypsin_ben_explicit_ready.pdb   # override on the CLI with --pdb
+
+training:
+  mode: generative                # sets --generative-loop
+  episodes: 15
+  grp_size: 12
+  platform: CUDA
+  gen_device: "cuda:0"
+
+md:
+  n_md_steps: 1000000
+  record_stride: 4000
+  temperature: 298.0
+  solvent: explicit
+  forcefield_protein: amber14-all.xml
+  forcefield_water: amber14/tip3p.xml
+  minimize_iters: 500
+  equilibration_steps: 5000
+
+policy:
+  torsion_ar_checkpoint: torsion_ar_holo_pretrain.pt
+  lr: 5.0e-5
+
+geom2vec:
+  checkpoint: /path/to/tensornet_l3_h64_rbf32_r5.pth   # override with --geom2vec-ckpt
+  lagtime: 50
+  dim: 16
+  embed_stride: 2
+  vamp_epochs: 10
+  vamp_batch_size: 1024
+  vamp_learning_rate: 5.0e-4
+  vamp_epsilon: 1.0e-6
+  vamp_inverse_mode: regularize
+
+rewards:                          # 'rewards' keys use full field names (no prefix)
+  loo_vamp_reward_weight: 1.0
+  vamp_bin_entropy_coef: -1.0     # < 0 ties to ent_coef
+  msm_ig_reward_coef: 0.5
+  start_distance_reward_coef: 0.0
+
+steering:                         # 'steering' keys get the steer_ prefix
+  replay_starts: true
+  global_steps: 5000
+  global_updates: 25
+  torsion_steps: 2000
+  torsion_updates: 25
+  release_steps: 1000
+  refine_minimize_iters: 500
+  global_lambda_during_torsion: 0.2
+  k_rmsd: 2000.0
+  k_e2e: 1000.0
+  k_torsion: 100.0
+
+io:
+  snapshot_dir: runs/run_01/run_snaps
+  checkpoint_dir: runs/run_01/run_snaps/ckpts
+  checkpoint_interval: 3
+  resume: false
+
+# ── long tail (flat field names) ─────────────────────────────────────────
+projection: geom2vec_vamp
+enable_multi_gpu: true
+ligand_smiles: "c1ccc(cc1)C(=N)N"
+ligand_pocket_restraint: true
+ligand_pocket_restraint_radius_nm: 0.6
+ligand_pocket_restraint_k: 1000.0
+pcca_n_macrostates: 7
+ent_coef: 0.15
+kl_coef: 0.1
+grpo_iters: 20
+sync_interval: 1
+energy_threshold: 1.0e12
+max_resample_attempts: 6
+anchoring_round: false            # equivalent to --no-anchoring-round
+retrieval_candidates: 4096
+retrieval_topk: 32
+retrieval_max_resamples: 3
+retrieval_cache_max_frames: 200000
+plot_freq: 1

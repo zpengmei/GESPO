@@ -6,8 +6,6 @@ def __getattr__(name: str):
         "GeomVecManager": ".geom2vec_manager",
         "LOOVAMPRewards": "._reexports",
         "RetrievalManager": ".retrieval_manager",
-        "EpochCoordinator": ".epoch_coordinator",
-        "SamplingOrchestrator": ".sampling_orchestrator",
         "save_torsion_ar_policy": ".policy_io",
         "graph_algorithms": "._reexports",
     }

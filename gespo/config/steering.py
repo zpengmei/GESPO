@@ -25,8 +25,8 @@ class SteeringConfig:
     steer_k_e2e: float = 5000.0
     steer_k_rg: float = 0.0
     steer_k_torsion: float = 200.0
-    steer_k_dist: float = 0.0  # defaults to steer_k_e2e at runtime if 0
-    steer_k_theta: float = 0.0  # defaults to steer_k_torsion at runtime if 0
+    steer_k_dist: float = 5000.0  # runtime falls back to steer_k_e2e only if explicitly set to 0
+    steer_k_theta: float = 200.0  # runtime falls back to steer_k_torsion only if explicitly set to 0
 
     # Sidechain chi torsion weight (0 disables chi steering).
     steer_chi_weight: float = 0.1
@@ -59,14 +59,8 @@ class SteeringConfig:
         "steer_k_e2e": "Replay steering: force constant for E2E distance restraint (kJ/mol/nm^2).",
         "steer_k_rg": "Replay steering: force constant for CA Rg restraint (kJ/mol/nm^2, 0=disabled).",
         "steer_k_torsion": "Replay steering: force constant for torsion restraints (kJ/mol/rad^2).",
-        "steer_k_dist": {
-            "help": "Replay steering: force constant for extra distance global tokens (kJ/mol/nm^2).",
-            "default_override": 5000.0,
-        },
-        "steer_k_theta": {
-            "help": "Replay steering: force constant for extra angle global tokens (kJ/mol/rad^2).",
-            "default_override": 200.0,
-        },
+        "steer_k_dist": "Replay steering: force constant for extra distance global tokens (kJ/mol/nm^2).",
+        "steer_k_theta": "Replay steering: force constant for extra angle global tokens (kJ/mol/rad^2).",
         "steer_chi_weight": (
             "Replay steering: per-torsion weight for sidechain \u03c7 torsions (0=disabled)."
         ),

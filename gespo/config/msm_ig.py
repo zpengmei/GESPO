@@ -13,7 +13,7 @@ class MSMIGConfig:
     msm_ig_reward_coef: float = 0.0
     msm_ig_state_mode: str = "kmeans"  # "kmeans" or "vamp"
     msm_ig_n_states: int = 50
-    msm_ig_dim: int = 5
+    msm_ig_dim: int = 2
     msm_ig_prior_alpha: float = 1.0
     msm_ig_max_fit_samples: int = 50000
     msm_ig_seed: int = 42
@@ -32,10 +32,7 @@ class MSMIGConfig:
             "choices": ["kmeans", "vamp"],
         },
         "msm_ig_n_states": "Number of k-means microstates (K) for MSM-IG.",
-        "msm_ig_dim": {
-            "help": "Linear VAMP coordinate dimension for MSM k-means.",
-            "default_override": 2,
-        },
+        "msm_ig_dim": "Linear VAMP coordinate dimension for MSM k-means.",
         "msm_ig_prior_alpha": "Symmetric Dirichlet prior pseudo-count per transition entry.",
         "msm_ig_max_fit_samples": "Max history frames for MSM k-means fitting.",
         "msm_ig_seed": "RNG seed for MSM k-means fitting.",

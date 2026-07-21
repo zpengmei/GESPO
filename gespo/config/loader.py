@@ -5,6 +5,7 @@ and saving the effective config for reproducibility.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import fields, asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -56,6 +57,28 @@ _YAML_SECTIONS = {
 }
 
 
+# Top-level YAML sections whose leaf keys are prefixed with the section name
+# (unless already prefixed) and treated as flat fields.
+_PREFIX_SECTIONS = {
+    "geom2vec": "geom2vec_",
+    "rewards": "",  # reward fields have varied prefixes
+    "path_sampling": "path_boundary_",
+    "committor": "committor_",
+    "steering": "steer_",
+}
+
+# All recognized top-level section names (nested + prefix).
+_KNOWN_SECTIONS = set(_YAML_SECTIONS.keys()) | set(_PREFIX_SECTIONS.keys())
+
+
+def _known_field_names() -> set:
+    """Flat field names accepted by TrainingConfig (for validating YAML keys)."""
+    from .training import TrainingConfig
+
+    # to_dict() enumerates every scalar field across TrainingConfig + sub-configs.
+    return set(TrainingConfig().to_dict().keys())
+
+
 def _flatten_yaml(data: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a nested YAML dict to flat config field names.
 
@@ -72,17 +95,9 @@ def _flatten_yaml(data: Dict[str, Any]) -> Dict[str, Any]:
             if yaml_key in section_data:
                 flat[flat_key] = section_data[yaml_key]
 
-    # Pass-through: any key in top-level sections like "geom2vec", "rewards",
-    # "path_sampling", "committor", "steering" gets prefixed with the section name
-    # if the key doesn't already have it.
-    prefix_sections = {
-        "geom2vec": "geom2vec_",
-        "rewards": "",  # reward fields have varied prefixes
-        "path_sampling": "path_boundary_",
-        "committor": "committor_",
-        "steering": "steer_",
-    }
-    for section, prefix in prefix_sections.items():
+    # Pass-through: any key in a prefix section (geom2vec/rewards/path_sampling/
+    # committor/steering) gets prefixed with the section name if not already.
+    for section, prefix in _PREFIX_SECTIONS.items():
         section_data = data.get(section, {})
         if not isinstance(section_data, dict):
             continue
@@ -90,46 +105,89 @@ def _flatten_yaml(data: Dict[str, Any]) -> Dict[str, Any]:
             flat_key = key if key.startswith(prefix) else (prefix + key)
             flat[flat_key] = value
 
-    # Any remaining top-level keys not in a known section are passed through directly.
-    known_sections = set(_YAML_SECTIONS.keys()) | set(prefix_sections.keys())
+    # Any remaining top-level keys not in a known section are passed through
+    # directly (advanced flat pass-through). Nested unknown sections (dict
+    # values) are intentionally NOT flattened here — load_config validates and
+    # warns about them rather than silently dropping them.
     for key, value in data.items():
-        if key not in known_sections and not isinstance(value, dict):
+        if key not in _KNOWN_SECTIONS and not isinstance(value, dict):
             flat[key] = value
 
     return flat
 
 
+def mode_to_flags(mode: str) -> Dict[str, Any]:
+    """Map a ``mode`` shortcut to the concrete boolean flags it sets.
+
+    Shared single source of truth for the YAML ``training.mode`` shortcut and
+    the CLI ``--mode`` option. Unknown / ``pretrain`` modes return no flags
+    (pretrain is a separate subcommand).
+    """
+    m = str(mode or "").strip().lower()
+    if m == "generative":
+        return {"generative_loop": True}
+    if m in ("path-sampling", "path_sampling", "path"):
+        return {"generative_loop": True, "path_sampling": True}
+    if m == "standard":
+        return {"generative_loop": False}
+    return {}
+
+
+def solvent_to_flags(value: str) -> Dict[str, Any]:
+    """Map a ``solvent`` shortcut to the concrete implicit/explicit flags.
+
+    Shared by the YAML ``md.solvent`` shortcut and the CLI ``--solvent`` option.
+    """
+    s = str(value or "").strip().lower()
+    if s == "explicit":
+        return {"explicit_solvent": True, "implicit_solvent": False}
+    if s in ("implicit", "gbsa", "gbn2"):
+        return {"implicit_solvent": True, "explicit_solvent": False}
+    return {}
+
+
 def _resolve_mode(flat: Dict[str, Any]) -> None:
-    """Resolve the 'mode' shortcut to concrete flags."""
-    mode = str(flat.pop("_mode", "")).strip().lower()
-    if not mode:
-        return
-    if mode == "generative":
-        flat.setdefault("generative_loop", True)
-    elif mode in ("path-sampling", "path_sampling", "path"):
-        flat.setdefault("generative_loop", True)
-        flat.setdefault("path_sampling", True)
-    elif mode == "standard":
-        flat.setdefault("generative_loop", False)
-    elif mode == "pretrain":
-        # Pretrain mode is handled by the pretrain subcommand, not a flag.
-        pass
+    """Resolve the YAML 'mode' shortcut to concrete flags (does not override)."""
+    for key, value in mode_to_flags(flat.pop("_mode", "")).items():
+        flat.setdefault(key, value)
 
 
 def _resolve_solvent(flat: Dict[str, Any]) -> None:
-    """Resolve the 'solvent' shortcut to concrete flags."""
-    solvent = str(flat.pop("_solvent_type", "")).strip().lower()
-    if not solvent:
+    """Resolve the YAML 'solvent' shortcut to concrete flags."""
+    for key, value in solvent_to_flags(flat.pop("_solvent_type", "")).items():
+        flat[key] = value
+
+
+def _validate_yaml_keys(data: Dict[str, Any], strict: bool) -> None:
+    """Warn (or raise, if strict) on unknown top-level YAML keys/sections.
+
+    Catches the two silent-drop footguns: an unknown *nested* section (dict
+    value) was previously discarded without notice, and an unknown flat key was
+    silently ignored downstream. Known dict-valued fields (e.g.
+    ``global_token_ranges``) are exempt.
+    """
+    known_fields = _known_field_names()
+    problems = []
+    for key, value in data.items():
+        if key in _KNOWN_SECTIONS or key in known_fields:
+            continue
+        kind = "section" if isinstance(value, dict) else "key"
+        problems.append(f"unknown config {kind} {key!r}")
+    if not problems:
         return
-    if solvent == "explicit":
-        flat["explicit_solvent"] = True
-        flat["implicit_solvent"] = False
-    elif solvent in ("implicit", "gbsa", "gbn2"):
-        flat["implicit_solvent"] = True
-        flat["explicit_solvent"] = False
+    msg = (
+        "Config validation: "
+        + "; ".join(sorted(problems))
+        + ". Use a known section, a valid flat field name, or run "
+        "'gespo config validate <file>' to check. "
+        "(These are ignored, not applied.)"
+    )
+    if strict:
+        raise ValueError(msg)
+    warnings.warn(msg, stacklevel=2)
 
 
-def load_config(path: str, overrides: Optional[Dict[str, Any]] = None):
+def load_config(path: str, overrides: Optional[Dict[str, Any]] = None, strict: bool = False):
     """Load a TrainingConfig from a YAML file with optional overrides.
 
     Parameters
@@ -138,6 +196,8 @@ def load_config(path: str, overrides: Optional[Dict[str, Any]] = None):
         Path to the YAML config file.
     overrides : dict, optional
         CLI or programmatic overrides (flat field names).
+    strict : bool, optional
+        If True, raise on unknown YAML keys/sections instead of warning.
 
     Returns
     -------
@@ -151,6 +211,8 @@ def load_config(path: str, overrides: Optional[Dict[str, Any]] = None):
 
     with open(path) as f:
         data = yaml.safe_load(f) or {}
+
+    _validate_yaml_keys(data, strict=strict)
 
     flat = _flatten_yaml(data)
     _resolve_mode(flat)
@@ -226,8 +288,8 @@ def generate_template(mode: str = "generative") -> str:
         "",
         "geom2vec:",
         "  checkpoint: path/to/geom2vec.pt",
-        "  lagtime: 150",
-        "  dim: 10",
+        "  lagtime: 20",
+        "  dim: 2",
         "  vamp_epochs: 10",
         "",
         "policy:",

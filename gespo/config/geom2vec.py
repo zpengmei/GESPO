@@ -12,7 +12,7 @@ class Geom2VecConfig:
     # Projection settings (used when projection == "geom2vec_vamp").
     geom2vec_lagtime: int = 20
     geom2vec_dim: int = 2
-    geom2vec_label_mode: str = "auto"
+    geom2vec_label_mode: str = "linear_kmeans"
 
     # Backbone checkpoint + inference.
     geom2vec_checkpoint: str = ""
@@ -53,12 +53,10 @@ class Geom2VecConfig:
         "geom2vec_dim": {
             "help": "Number of discrete states (K) for the geom2vec VAMP lobe.",
             "aliases": ["--tica-dim", "--n-states"],
-            "default_override": 2,
         },
         "geom2vec_label_mode": {
             "help": "Discrete label mode: 'auto', 'vamp' (argmax), or 'linear_kmeans'.",
             "choices": ["auto", "vamp", "linear_kmeans"],
-            "default_override": "linear_kmeans",
         },
         "geom2vec_checkpoint": {
             "help": "Path to a geom2vec representation checkpoint.",

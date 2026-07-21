@@ -125,7 +125,7 @@ def ensure_vamp_bin_history_counts(
         geom2vec_cache=geom2vec_cache,
         geom2vec_projector_linear=geom2vec_projector_linear,
         geom2vec_mgr=geom2vec_mgr,
-        iter_history_trajs_fn=iter_fn,
+        iter_history_trajs=iter_fn,
     )
 
 
@@ -138,8 +138,10 @@ def ensure_msm_ig_history_counts(
     config,
     msm_ig_mgr,
     geom2vec_cache,
+    geom2vec_projector,
     geom2vec_projector_linear,
     geom2vec_mgr,
+    geom2vec_state_permutation_map,
     all_epoch_data,
     all_trajectory_lengths,
     all_epoch_traj_dcd_paths,
@@ -159,9 +161,11 @@ def ensure_msm_ig_history_counts(
         tag=tag,
         config=config,
         geom2vec_cache=geom2vec_cache,
+        geom2vec_projector=geom2vec_projector,
         geom2vec_projector_linear=geom2vec_projector_linear,
         geom2vec_mgr=geom2vec_mgr,
-        iter_history_trajs_fn=iter_fn,
+        geom2vec_state_permutation_map=geom2vec_state_permutation_map,
+        iter_history_trajs=iter_fn,
     )
 
 

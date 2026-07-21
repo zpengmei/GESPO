@@ -20,7 +20,14 @@ class RunConfigurer:
         self.log_dir = Path(log_dir).expanduser().resolve() if log_dir else None
 
     def as_dict(self) -> dict:
-        return {key: getattr(self.args, key) for key in sorted(vars(self.args))}
+        # Resolve the effective configuration so the summary/dump show real
+        # values rather than the ``None`` unset-sentinel that unspecified CLI
+        # flags now carry. Falls back to the raw namespace if resolution fails.
+        try:
+            from gespo.config import TrainingConfig
+            return TrainingConfig.from_args(self.args).to_dict()
+        except Exception:
+            return {key: getattr(self.args, key) for key in sorted(vars(self.args))}
 
     def formatted_lines(self) -> list[str]:
         config_dict = self.as_dict()

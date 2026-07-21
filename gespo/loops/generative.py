@@ -15,9 +15,9 @@ from gespo.training.vamp_stats import SufficientStatistics
 from gespo.training.components.geom2vec_manager import Geom2VecManager, align_states_by_overlap
 from gespo.rewards.loo_vamp import LOOVAMPRewards
 from gespo.training.components.retrieval_manager import RetrievalManager
-from gespo.training.components.epoch_coordinator import EpochCoordinator
-from gespo.training.components.sampling_orchestrator import SamplingOrchestrator
 from gespo.training.components.policy_io import save_torsion_ar_policy
+from gespo.loops._helpers import iter_history_trajs as _shared_iter_history_trajs
+from gespo.utils.log import epoch_phase
 from gespo.analysis.metrics import compute_globals_from_coords as _compute_globals_impl
 from gespo.rewards.vamp_bin import VampBinBonus
 from gespo.training.components.loo_vamp_seeder import ensure_loo_vamp_history_stats as _ensure_loo_vamp_impl
@@ -774,40 +774,17 @@ def train(args: argparse.Namespace) -> None:
     def _iter_history_trajs(upto_epoch_exclusive: int):
         """Yield history trajectories (epoch_idx, traj_idx, L_i, dcd_path, coords_nm).
 
-        This is used by multiple reward helpers (MSM-IG, VAMP-bin) to populate
-        history statistics without duplicating traversal logic.
+        Thin closure over the shared ``gespo.loops._helpers.iter_history_trajs``
+        that supplies this loop's history buffers. Used by multiple reward
+        helpers (MSM-IG, VAMP-bin) to populate history statistics.
         """
-
-        upto = max(0, min(int(upto_epoch_exclusive), len(all_epoch_data)))
-        for epoch_idx in range(upto):
-            # Skip epochs quarantined from VAMP scoring (e.g. pretrain trajs
-            # with incompatible time spacing).
-            if epoch_idx < len(all_epoch_vamp_exclude) and all_epoch_vamp_exclude[epoch_idx]:
-                continue
-
-            epoch_data = all_epoch_data[epoch_idx]
-            traj_lens = all_trajectory_lengths[epoch_idx] if epoch_idx < len(all_trajectory_lengths) else []
-            traj_paths = all_epoch_traj_dcd_paths[epoch_idx] if epoch_idx < len(all_epoch_traj_dcd_paths) else []
-            if not traj_lens:
-                continue
-            cursor = 0
-            for traj_idx, L in enumerate(traj_lens):
-                L_i = int(L)
-                cursor_next = cursor + max(0, L_i)
-                if L_i <= 0:
-                    cursor = cursor_next
-                    continue
-                dcd_path = traj_paths[traj_idx] if traj_idx < len(traj_paths) else None
-                coords_nm = None
-                if not dcd_path:
-                    try:
-                        coords_list = [np.asarray(fr[1], dtype=np.float32) for fr in epoch_data[cursor:cursor_next]]
-                        if coords_list and len(coords_list) == L_i:
-                            coords_nm = np.asarray(coords_list, dtype=np.float32)
-                    except Exception:
-                        coords_nm = None
-                cursor = cursor_next
-                yield int(epoch_idx), int(traj_idx), int(L_i), dcd_path, coords_nm
+        return _shared_iter_history_trajs(
+            all_epoch_data,
+            all_trajectory_lengths,
+            all_epoch_traj_dcd_paths,
+            all_epoch_vamp_exclude,
+            upto_epoch_exclusive,
+        )
 
     _vamp_bin_indices = VampBinBonus.bin_indices
 
@@ -1384,20 +1361,6 @@ def train(args: argparse.Namespace) -> None:
 
     sampler = Sampler(config, envs, reward_calculator=None, device=torch_device)
 
-    # Initialize Phase 2 Orchestrators
-    epoch_coord = EpochCoordinator(
-        config=config,
-        checkpoint_manager=ckpt_manager,
-        geom2vec_manager=geom2vec_mgr,
-        retrieval_mgr=retrieval_mgr
-    )
-    sampling_orch = SamplingOrchestrator(
-        config=config,
-        sampler=sampler,
-        loo_vamp_rewards=loo_vamp_mgr,
-        device=torch_device
-    )
-    
     # Stats Log
     stats_path = Path(config.stats_log) if config.stats_log else None
     if stats_path and not stats_path.exists():
@@ -1468,6 +1431,7 @@ def train(args: argparse.Namespace) -> None:
         epoch_start_time = time.time()
 
         # A. Refresh projector (every N epochs)
+        epoch_phase(ep + 1, config.episodes, "A")
         refresh_interval = int(getattr(config, "pca_refresh_interval", 1) or 1)
         model_ready = geom2vec_mgr.is_trained()
         if refresh_interval <= 0:
@@ -1512,7 +1476,7 @@ def train(args: argparse.Namespace) -> None:
                 print(f"[Retrieval Cache] Warning: cache cap failed ({exc_reb})")
 
         # B. Sample torsion starts from autoregressive policy
-        print(f"[Epoch {ep+1}] Phase B: Sampling torsion starts from TorsionAR policy...")
+        epoch_phase(ep + 1, config.episodes, "B", "Sampling torsion starts from TorsionAR policy")
 
         rand_mask = torch.zeros(config.grp_size, dtype=torch.bool, device=torch_device)
 
@@ -2144,6 +2108,7 @@ def train(args: argparse.Namespace) -> None:
             epoch_dir = Path(config.snapshot_dir) / f"epoch_{ep+1:04d}"
             epoch_dir.mkdir(parents=True, exist_ok=True)
 
+        epoch_phase(ep + 1, config.episodes, "C")
         current_epoch_data, reward_tensors, metrics, active_mask_list = sampler.sample_epoch(
             ep,
             starts,
@@ -2213,6 +2178,7 @@ def train(args: argparse.Namespace) -> None:
             print(f"[Retrieval Cache] Warning: append failed: {exc_append}")
 
         # D. Compute LOO VAMP rewards from the softmax VAMP lobe outputs (probabilities).
+        epoch_phase(ep + 1, config.episodes, "D")
         loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
         loo_vamp_contributions = None
         vamp_bin_bonus = None
@@ -2700,6 +2666,7 @@ def train(args: argparse.Namespace) -> None:
                     traceback.print_exc()
                     loo_vamp_rewards = np.zeros(config.grp_size, dtype=np.float32)
         # E. Policy Update (GRPO) for torsion AR starts
+        epoch_phase(ep + 1, config.episodes, "E")
         if len(current_epoch_data) > 0:
             hill_data = None
 
@@ -2913,7 +2880,7 @@ def train(args: argparse.Namespace) -> None:
         else:
             update_stats = {}
 
-        print(f"[Epoch {ep+1}] Phase E: Logging & checkpointing...")
+        epoch_phase(ep + 1, config.episodes, "F", "Logging & checkpointing")
         print(f"Epoch {ep+1} Complete. Avg Reward: {metrics.get('avg_hill', 0.0):.4f}")
 
         if rollout_token_entropy is not None and rollout_token_entropy.size > 0:

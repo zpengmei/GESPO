@@ -1,9 +1,10 @@
 """CLI entrypoint with subcommands for GESPO.
 
 Usage:
+    gespo seed metad --pdb a.pdb --out-dir seeds/  # generate seed trajectories
+    gespo pretrain --pdb a.pdb --source seeds/ --out r0.pt  # TorsionAR pretraining
     gespo train --config config.yaml              # training from YAML
     gespo train --pdb a.pdb --generative-loop ...  # training from CLI flags
-    gespo pretrain --pdb a.pdb --source dcd_dir/   # TorsionAR pretraining
     gespo config template --mode generative        # generate config template
     gespo config validate config.yaml              # validate a config file
     gespo bootstrap rmsd-bias --help               # bootstrap utilities
@@ -17,6 +18,10 @@ import sys
 from pathlib import Path
 
 from .config import TrainingConfig
+# token_sets is dependency-light (no OpenMM/torch), so importing it to build help
+# text stays cheap. The authoritative KNOWN_GLOBAL_TOKEN_SETS (validated at run
+# time in pretrain_torsion_ar) lives there too.
+from .training.token_sets import COMMON_GLOBAL_TOKEN_SETS as _COMMON_TOKEN_SETS
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +52,26 @@ def _preflight_compatibility_warnings(args: argparse.Namespace) -> None:
             )
     except Exception:
         pass
+
+
+def _preflight_pdb_present(args: argparse.Namespace) -> None:
+    """Require a structure for non-toy runs.
+
+    ``pdb`` no longer silently defaults to a phantom ``chignolin.pdb``; fail
+    early with a clear message instead of a downstream file-not-found.
+    """
+    is_toy = bool(
+        getattr(args, "toy_phi_psi_loop", False)
+        or getattr(args, "toy_phi_psi_dga_loop", False)
+    )
+    if is_toy:
+        return
+    pdb = str(getattr(args, "pdb", "") or "").strip()
+    if not pdb:
+        raise ValueError(
+            "No structure provided: set --pdb (or endpoints.pdb_a in YAML) to a PDB file. "
+            "There is no default structure."
+        )
 
 
 def _preflight_endpoint_validation(args: argparse.Namespace) -> None:
@@ -157,11 +182,31 @@ def _save_effective_config(args: argparse.Namespace) -> None:
 # Subcommand: train
 # ---------------------------------------------------------------------------
 
+def _apply_mode_solvent_shortcuts(args: argparse.Namespace) -> None:
+    """Expand the CLI ``--mode`` / ``--solvent`` shortcuts into concrete flags.
+
+    Explicitly-passed boolean flags win (with the None-sentinel default, an
+    explicit flag is non-None while an unset one is None). The shim attributes
+    are removed so they never reach TrainingConfig (which has no such fields).
+    """
+    from .config.loader import mode_to_flags, solvent_to_flags
+
+    for attr, to_flags in (("mode", mode_to_flags), ("solvent", solvent_to_flags)):
+        value = getattr(args, attr, None)
+        if value:
+            for flag, flag_value in to_flags(value).items():
+                if getattr(args, flag, None) is None:  # not explicitly set
+                    setattr(args, flag, flag_value)
+        if hasattr(args, attr):
+            delattr(args, attr)
+
+
 def _cmd_train(args: argparse.Namespace) -> None:
     """Run GESPO training."""
     from .training import train
     from .utils.config import RunConfigurer
 
+    _apply_mode_solvent_shortcuts(args)
     args = _load_config_from_args(args)
     _resolve_device(args)
 
@@ -172,6 +217,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
     RunConfigurer(args, log_dir=config_log_dir).print_summary()
 
     _save_effective_config(args)
+    _preflight_pdb_present(args)
     _preflight_endpoint_validation(args)
     _snapshot_endpoint_pdbs(args)
     _preflight_compatibility_warnings(args)
@@ -232,7 +278,7 @@ def _cmd_config(args: argparse.Namespace) -> None:
             sys.exit(1)
         from .config.loader import load_config
         try:
-            config = load_config(config_path)
+            config = load_config(config_path, strict=bool(getattr(args, "strict", False)))
             print(f"Config loaded successfully from {config_path}")
             print(f"  mode: {'path-sampling' if config.path_sampling else ('generative' if config.generative_loop else 'standard')}")
             print(f"  pdb: {config.pdb}")
@@ -267,13 +313,31 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # --- gespo train ---
+    # `--help` shows only the curated essential flags; `--help-all` shows every
+    # flag. Detect it up front so the parser is built with full help text when
+    # requested (SUPPRESS is baked in at add_argument time, so the choice must be
+    # made before populating).
+    _show_advanced = "--help-all" in sys.argv
     train_parser = subparsers.add_parser(
         "train", help="Run GESPO training",
         formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "" if _show_advanced else
+            "Showing essential options only. Run 'gespo train --help-all' to see "
+            "all options."
+        ),
     )
     train_parser.add_argument("--config", "-c", default="", metavar="YAML",
         help="Path to YAML config file. CLI flags override YAML values.")
-    TrainingConfig.populate_parser(train_parser)
+    train_parser.add_argument("--help-all", action="help",
+        help="Show all options, including advanced ones, and exit.")
+    train_parser.add_argument("--mode", choices=["generative", "path-sampling", "standard"],
+        default=None,
+        help="Training mode shortcut: sets --generative-loop / --path-sampling.")
+    train_parser.add_argument("--solvent", choices=["explicit", "implicit", "gbsa", "gbn2"],
+        default=None,
+        help="Solvent shortcut: sets --implicit-solvent / --explicit-solvent.")
+    TrainingConfig.populate_parser(train_parser, show_advanced=_show_advanced)
 
     # --- gespo pretrain ---
     pretrain_parser = subparsers.add_parser("pretrain", help="Pretrain TorsionAR policy")
@@ -286,8 +350,17 @@ def main():
     pretrain_parser.add_argument("--lr", type=float, default=1e-4)
     pretrain_parser.add_argument("--device", default="", help="Device (e.g., cuda:0)")
     pretrain_parser.add_argument("--stride", type=int, default=1)
-    pretrain_parser.add_argument("--global-token-set", default="rmsd_e2e")
-    pretrain_parser.add_argument("--torsion-mode", default="backbone", choices=["backbone", "backbone_chi"])
+    pretrain_parser.add_argument(
+        "--global-token-set", default="rmsd_e2e",
+        help="Global CV tokens the AR policy conditions on. Common: "
+             + ", ".join(_COMMON_TOKEN_SETS)
+             + ". See docs/reference.md for the full catalog.")
+    pretrain_parser.add_argument(
+        "--torsion-mode", default="backbone",
+        choices=["backbone", "backbone+sidechain", "backbone_chi"],
+        help="Torsion tokens: 'backbone' (phi/psi/omega) or 'backbone+sidechain' "
+             "(adds chi1-chi4). 'backbone_chi' is a legacy alias for "
+             "'backbone+sidechain'.")
     pretrain_parser.add_argument("--ligand-smiles", default="",
                                   help="SMILES of the ligand (for RDKit-based rotatable bond detection). "
                                        "When provided, uses standard cheminformatics rotatable bond definition "
@@ -318,6 +391,13 @@ def main():
         help="Training mode for the template")
     validate_parser = config_sub.add_parser("validate", help="Validate a config file")
     validate_parser.add_argument("config_file", help="Path to YAML config file")
+    validate_parser.add_argument("--strict", action="store_true",
+        help="Raise on unknown config keys/sections instead of warning.")
+
+    # --- gespo seed ---
+    # Seed generation lives in gespo/seed (dependency-light parser build).
+    from .seed.cli import build_seed_subparser
+    build_seed_subparser(subparsers)
 
     # --- gespo bootstrap ---
     subparsers.add_parser("bootstrap", help="Bootstrap utilities (run: python -m gespo.bootstrap_cli)")
@@ -325,7 +405,8 @@ def main():
     # --- Backward compat: if no subcommand, treat as 'train' ---
     # Check if the first positional arg is a known subcommand.
     # If not (e.g., user passed --pdb directly), insert 'train' as the subcommand.
-    if len(sys.argv) > 1 and sys.argv[1] not in ("train", "pretrain", "config", "bootstrap", "-h", "--help"):
+    _KNOWN_COMMANDS = ("train", "pretrain", "config", "seed", "bootstrap", "-h", "--help")
+    if len(sys.argv) > 1 and sys.argv[1] not in _KNOWN_COMMANDS:
         sys.argv.insert(1, "train")
 
     args = parser.parse_args()
@@ -340,6 +421,9 @@ def main():
         _cmd_pretrain(args)
     elif args.command == "config":
         _cmd_config(args)
+    elif args.command == "seed":
+        from .seed.cli import cmd_seed
+        cmd_seed(args, argv=sys.argv)
     elif args.command == "bootstrap":
         print("Run bootstrap utilities with: python -m gespo.bootstrap_cli --help")
     else:
