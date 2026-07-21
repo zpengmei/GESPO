@@ -1,26 +1,25 @@
 """Programmatic API for GESPO training workflows.
 
-Example usage::
+These are the ``pretrain`` and ``train`` stages of the pipeline. The preceding
+``seed`` stage is ``gespo.generate_seeds`` (see ``gespo.seed``). A full run::
 
-    from gespo.api import train, pretrain_torsion_ar
+    import gespo
+
+    # 1. seed: short biased MD -> seeds/walker_*/production.dcd
+    gespo.generate_seeds(method="metad", pdb="protein.pdb", out_dir="seeds",
+                         cv_set="folding", n_walkers=4)
+
+    # 2. pretrain the TorsionAR policy on the seeds
+    gespo.pretrain_torsion_ar(source_path="seeds/", out_path="checkpoints/r0.pt",
+                              pdb_path="protein.pdb", global_token_set="rmsd_e2e_rg")
+
+    # 3. train (from a YAML path, a dict, or a TrainingConfig)
     from gespo.config import load_config
+    cfg = load_config("config.yaml")
+    cfg.episodes = 10
+    gespo.train(cfg)
 
-    # Load config from YAML
-    config = load_config("config.yaml")
-
-    # Modify programmatically
-    config.episodes = 10
-    config.snapshot_dir = "runs/round1"
-
-    # Train
-    train(config)
-
-    # Or pretrain a TorsionAR policy
-    pretrain_torsion_ar(
-        source_path="history_dcds/",
-        out_path="checkpoints/r0.pt",
-        pdb_path="endpoint_A.pdb",
-    )
+See ``docs/workflow.md`` for the end-to-end walkthrough and the multi-round protocol.
 """
 from __future__ import annotations
 
@@ -81,6 +80,13 @@ def pretrain_torsion_ar(
         Output path for the pretrained checkpoint.
     pdb_path : str
         PDB file for topology.
+    global_token_set : str, optional
+        Global CV tokens the policy conditions on (default ``"rmsd_e2e"``).
+        Validated against the known set — an unknown name raises with the valid
+        list. See ``docs/reference.md`` for the catalog.
+    torsion_mode : str, optional
+        ``"backbone"`` (default) or ``"backbone+sidechain"`` (adds chi1-chi4).
+        The legacy spelling ``"backbone_chi"`` is accepted and mapped.
     ligand_smiles : str, optional
         SMILES of the ligand (enables RDKit-based rotatable-bond detection).
     reweight_zenodo_dir, reweight_ref_pdb, reweight_labels_npz, reweight_alpha : optional
@@ -93,7 +99,10 @@ def pretrain_torsion_ar(
     Notes
     -----
     This is a faithful superset of the ``gespo pretrain`` CLI: every parameter
-    the CLI forwards is accepted here with identical defaults.
+    the CLI forwards is accepted here with identical defaults. Model-architecture
+    knobs (``d_model``, ``n_layers``, ``n_heads``, ``kmix``) are left at their
+    library defaults; call ``gespo.training.pretrain_torsion_ar`` directly to set
+    them.
     """
     from .training.pretrain_torsion_ar import pretrain_torsion_ar as _pretrain
 

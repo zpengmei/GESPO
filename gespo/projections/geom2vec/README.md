@@ -113,25 +113,31 @@ probs = projector.state_probs_from_cache_key("epoch_0009/epoch_0009_walker_01")
 labels = projector.assign_states(probs)
 ```
 
-## Using in GESPO (discrete-start loop)
+## Using in GESPO (the generative loop)
 
-The discrete-start loop (`gespo.loops._legacy.discrete`) supports a `geom2vec_vamp` projection mode that:
+`gespo train --generative-loop` uses `--projection geom2vec_vamp` as its default
+state backbone. Each epoch (Phase A) it:
 
-- infers and caches geom2vec embeddings as `float32` `*.pt` next to the per-walker `*.dcd` files under `--snapshot-dir`
+- infers and caches geom2vec embeddings as `float32` `*.pt` next to the per-walker
+  `*.dcd` files under the geom2vec cache root
 - trains a geom2vec `Lobe` online with a VAMP objective
-- uses the lobe output as soft states for discrete replay starts and for LOO-VAMP rewards
+- uses the lobe output as the metastable-state assignment that drives LOO-VAMP /
+  VAMP-bin / MSM-info-gain rewards and retrieval-based replay starts
 
 Minimal flags:
 
 ```bash
 python -m gespo train \
+  --pdb protein.pdb --generative-loop \
   --projection geom2vec_vamp \
-  --geom2vec-ckpt /path/to/geom2vec_rep.ckpt \
+  --geom2vec-ckpt /path/to/geom2vec_backbone.pth \
   --geom2vec-cache-root /path/to/run_snaps \
   --geom2vec-embed-stride 2 \
   --geom2vec-dim 16 \
   --geom2vec-lagtime 150
 ```
 
-(`--tica-dim` / `--n-states` are accepted aliases of `--geom2vec-dim`; there is
-no `--tica-lagtime` — use `--geom2vec-lagtime`.)
+`--geom2vec-dim` is the number of VAMP states K (`--tica-dim` / `--n-states` are
+accepted aliases). There is no `--tica-lagtime` — use `--geom2vec-lagtime`. See the
+runnable recipes in [`../../../examples/`](../../../examples/) and the concept docs
+in [`../../../docs/`](../../../docs/).
