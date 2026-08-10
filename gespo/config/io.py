@@ -25,6 +25,7 @@ class IOConfig:
     rmsd_filter: float = 0.0
     save_epoch_coords: bool = True
     anchoring_source_dir: str = ""
+    diagnostics_plugin: str = ""
 
     CLI_META: ClassVar[dict] = {
         "checkpoint_dir": "Directory to save checkpoints.",
@@ -54,5 +55,10 @@ class IOConfig:
         },
         "anchoring_source_dir": (
             "Directory with existing anchoring trajectories to bootstrap history."
+        ),
+        "diagnostics_plugin": (
+            "Optional Python hook for a custom per-epoch analysis/monitoring plot: "
+            "'/path/file.py:callable'. Runs on the same plot_freq cadence as the "
+            "built-in plots. Off by default (no plugin -> nothing runs)."
         ),
     }

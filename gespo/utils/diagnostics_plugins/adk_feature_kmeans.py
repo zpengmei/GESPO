@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -447,4 +448,164 @@ def adk_feature_kmeans_boundaries(
         in_b[both] = ~choose_a[both]
 
     return in_a.astype(bool, copy=False), in_b.astype(bool, copy=False), ra, rb
+
+
+def plot_feature_pairs(
+    *,
+    config: Any,
+    epoch: int,
+    geom2vec_cache: Any,
+    cached_keys: Sequence[str],
+) -> None:
+    """Diagnostics plugin: ADK domain-hinge angles + signature residue distances.
+
+    Intended usage: ``--diagnostics-plugin /abs/.../adk_feature_kmeans.py:plot_feature_pairs``.
+    Requires an ADK-numbered endpoint PDB (``--pdb``) -- the residue ranges/numbers
+    here (hinge domains, residues 145/52/169/55) are specific to adenylate kinase
+    and will resolve to empty/meaningless selections for any other protein.
+
+    Reuses the same cached geom2vec CA coordinates the training loop already
+    holds for this epoch (``geom2vec_cache``/``cached_keys``) rather than
+    re-reading trajectories from disk.
+    """
+    # Determine token count + (optional) token mask from the cache.
+    n_tokens = None
+    token_mask = None
+    for k in cached_keys:
+        if not k:
+            continue
+        try:
+            rec = geom2vec_cache.get(k)
+            token_mask = getattr(rec, "token_mask", None)
+        except Exception:
+            token_mask = None
+        try:
+            _g, ca0 = geom2vec_cache.load(k)
+            ca0 = np.asarray(ca0)
+            if ca0.ndim == 3 and ca0.shape[-1] == 3:
+                n_tokens = int(ca0.shape[1])
+                break
+        except Exception:
+            continue
+    if n_tokens is None:
+        raise RuntimeError("no cached CA coords")
+
+    pdb_a_path = str(getattr(config, "pdb", "") or "").strip()
+    if not pdb_a_path:
+        raise RuntimeError("missing pdb path")
+
+    groups = _build_adk_groups_from_endpoint_pdb(pdb_a_path, n_tokens=int(n_tokens), token_mask=token_mask)
+
+    theta_nmp_deg_all: List[np.ndarray] = []
+    theta_lid_deg_all: List[np.ndarray] = []
+    dist_145_52_A_all: List[np.ndarray] = []
+    dist_169_55_A_all: List[np.ndarray] = []
+
+    deg = float(180.0 / np.pi)
+    for k in cached_keys:
+        if not k:
+            continue
+        try:
+            _graph, ca_nm = geom2vec_cache.load(k)
+        except Exception:
+            continue
+        ca_nm = np.asarray(ca_nm, dtype=np.float64)
+        if ca_nm.ndim != 3 or ca_nm.shape[-1] != 3:
+            continue
+
+        core_lid = _centroid(ca_nm, groups.core_lid)
+        core1 = _centroid(ca_nm, groups.core1)
+        nmp = _centroid(ca_nm, groups.nmp)
+        core2 = _centroid(ca_nm, groups.core2)
+        lid = _centroid(ca_nm, groups.lid)
+
+        theta_nmp = _angle(core_lid, core1, nmp).astype(np.float64, copy=False)
+        theta_lid = _angle(core2, core_lid, lid).astype(np.float64, copy=False)
+        dist_145_52 = _distance(ca_nm, int(groups.res145), int(groups.res52)).astype(np.float64, copy=False)
+        dist_169_55 = _distance(ca_nm, int(groups.res169), int(groups.res55)).astype(np.float64, copy=False)
+
+        theta_nmp_deg_all.append((theta_nmp * deg).astype(np.float32, copy=False))
+        theta_lid_deg_all.append((theta_lid * deg).astype(np.float32, copy=False))
+        dist_145_52_A_all.append((dist_145_52 * 10.0).astype(np.float32, copy=False))
+        dist_169_55_A_all.append((dist_169_55 * 10.0).astype(np.float32, copy=False))
+
+    if not theta_nmp_deg_all:
+        raise RuntimeError("no usable cached trajectories")
+
+    theta_nmp_deg = np.concatenate(theta_nmp_deg_all, axis=0)
+    theta_lid_deg = np.concatenate(theta_lid_deg_all, axis=0)
+    dist_145_52_A = np.concatenate(dist_145_52_A_all, axis=0)
+    dist_169_55_A = np.concatenate(dist_169_55_A_all, axis=0)
+
+    m_ang = np.isfinite(theta_nmp_deg) & np.isfinite(theta_lid_deg)
+    m_dst = np.isfinite(dist_145_52_A) & np.isfinite(dist_169_55_A)
+    theta_nmp_deg = theta_nmp_deg[m_ang]
+    theta_lid_deg = theta_lid_deg[m_ang]
+    dist_145_52_A = dist_145_52_A[m_dst]
+    dist_169_55_A = dist_169_55_A[m_dst]
+
+    max_pts = 200_000
+    rng = np.random.default_rng(0)
+    if int(theta_nmp_deg.shape[0]) > max_pts:
+        idx = rng.choice(int(theta_nmp_deg.shape[0]), size=max_pts, replace=False)
+        theta_nmp_deg = theta_nmp_deg[idx]
+        theta_lid_deg = theta_lid_deg[idx]
+    if int(dist_145_52_A.shape[0]) > max_pts:
+        idx = rng.choice(int(dist_145_52_A.shape[0]), size=max_pts, replace=False)
+        dist_145_52_A = dist_145_52_A[idx]
+        dist_169_55_A = dist_169_55_A[idx]
+
+    out_png = Path(config.snapshot_dir) / f"adk_feature_pairs_ep{epoch:03d}.png"
+    out_npz = Path(config.snapshot_dir) / f"adk_feature_pairs_ep{epoch:03d}.npz"
+    try:
+        np.savez_compressed(
+            str(out_npz),
+            theta_nmp_deg=theta_nmp_deg,
+            theta_lid_deg=theta_lid_deg,
+            dist_145_52_A=dist_145_52_A,
+            dist_169_55_A=dist_169_55_A,
+            epoch=np.asarray([int(epoch)], dtype=np.int64),
+        )
+    except Exception:
+        pass
+
+    import matplotlib.pyplot as plt  # type: ignore
+    from matplotlib.colors import LogNorm  # type: ignore
+
+    fig, axs = plt.subplots(1, 2, figsize=(12.5, 5.2))
+    ax0, ax1 = axs[0], axs[1]
+
+    hb0 = ax0.hexbin(
+        theta_nmp_deg,
+        theta_lid_deg,
+        gridsize=140,
+        mincnt=1,
+        cmap="magma",
+        norm=LogNorm(),
+    )
+    ax0.set_xlabel("theta_nmp_deg")
+    ax0.set_ylabel("theta_lid_deg")
+    ax0.set_title(f"ADK domain angles (epoch {epoch})")
+    cb0 = fig.colorbar(hb0, ax=ax0)
+    cb0.set_label("count (log)")
+
+    hb1 = ax1.hexbin(
+        dist_145_52_A,
+        dist_169_55_A,
+        gridsize=140,
+        mincnt=1,
+        cmap="magma",
+        norm=LogNorm(),
+    )
+    ax1.set_xlabel("dist_145_52_A")
+    ax1.set_ylabel("dist_169_55_A")
+    ax1.set_title(f"ADK distances (epoch {epoch})")
+    cb1 = fig.colorbar(hb1, ax=ax1)
+    cb1.set_label("count (log)")
+
+    fig.suptitle("ADK feature pairs (from cached epoch trajectories)")
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=200)
+    plt.close(fig)
+    print(f"[Diagnostics Plugin] Saved feature-pair plot: {out_png}", flush=True)
 
