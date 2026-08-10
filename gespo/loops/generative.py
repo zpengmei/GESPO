@@ -150,6 +150,7 @@ from scipy.special import digamma, gammaln
 from gespo.config import TrainingConfig
 from gespo.sampling import PeptideSampler
 from gespo.utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_frames
+from gespo.utils.tmem63_metrics import TMEM63_GLOBAL_TOKEN_NAMES, build_tmem63_token_indices
 from gespo.utils.ppi_metrics import PPI_GLOBAL_TOKEN_NAMES, PPITokenIndices, build_ppi_token_indices, compute_ppi_globals_from_frames, set_native_contacts
 from gespo.utils.geometry import _dihedral, calculate_rmsd, find_all_backbone_dihedrals
 from gespo.utils.openmm_utils import resolve_device
@@ -625,12 +626,13 @@ def train(args: argparse.Namespace) -> None:
     if global_dim > 0 and (not global_token_names or len(global_token_names) != global_dim):
         global_token_names = [f"global_{i}" for i in range(global_dim)]
 
-    # Precompute CA mapping (and optional ADK indices) for fast global-metric extraction
+    # Precompute CA mapping (and optional ADK or TMEM indices) for fast global-metric extraction
     # from protein coords.
     retrieval_ca_local: np.ndarray = np.zeros((0,), dtype=np.int64)
     retrieval_ref_ca_nm: np.ndarray = np.zeros((0, 3), dtype=np.float64)
     retrieval_protein_indices: np.ndarray = np.zeros((0,), dtype=np.int64)
     adk_token_idx = None
+    tmem63_token_idx = None
     ppi_token_idx: Optional[PPITokenIndices] = None
     try:
         protein_indices = env_ref.md_topology.select("protein")
@@ -652,6 +654,11 @@ def train(args: argparse.Namespace) -> None:
                 adk_token_idx = build_adk_token_indices(env_ref.md_topology, protein_indices=retrieval_protein_indices)
             except Exception:
                 adk_token_idx = None
+        if global_dim == len(TMEM63_GLOBAL_TOKEN_NAMES) or any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
+            try:
+                tmem63_token_idx = build_tmem63_token_indices(env_ref.md_topology, protein_indices=retrieval_protein_indices)
+            except Exception:
+                tmem63_token_idx = None
         if any(n in set(PPI_GLOBAL_TOKEN_NAMES) for n in global_token_names):
             try:
                 ppi_token_idx = build_ppi_token_indices(env_ref.md_topology, protein_indices=retrieval_protein_indices)
@@ -665,6 +672,7 @@ def train(args: argparse.Namespace) -> None:
         retrieval_ref_ca_nm = np.zeros((0, 3), dtype=np.float64)
         retrieval_protein_indices = np.zeros((0,), dtype=np.int64)
         adk_token_idx = None
+        tmem63_token_idx = None
         ppi_token_idx = None
 
     # Auto-detect pocket indices for pocket_rmsd / n_contacts global tokens.
@@ -734,6 +742,7 @@ def train(args: argparse.Namespace) -> None:
             ca_local=retrieval_ca_local,
             ref_ca_nm=retrieval_ref_ca_nm,
             adk_token_indices=adk_token_idx,
+            tmem63_token_indices=tmem63_token_idx,
             ppi_token_indices=ppi_token_idx,
             pocket_ca_local=_pocket_ca_local,
             pocket_ref_ca_nm=_pocket_ref_ca_nm,
@@ -1378,7 +1387,7 @@ def train(args: argparse.Namespace) -> None:
         diag_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _run_anchoring_round() -> None:
-        from .components.anchoring import _run_anchoring_round as _anchor_impl
+        from .components.anchoring import _run_anchoring_round as _anchor_impl # NOTE: Why doesn't this fail?
         _anchor_impl(
             config=config,
             envs=envs,

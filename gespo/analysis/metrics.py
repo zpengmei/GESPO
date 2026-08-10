@@ -15,6 +15,10 @@ from gespo.utils.adk_metrics import (
     ADK_GLOBAL_TOKEN_NAMES,
     compute_adk_global_values_from_frames,
 )
+from gespo.utils.tmem63_metrics import (
+    TMEM63_GLOBAL_TOKEN_NAMES,
+    compute_tmem63_global_values_from_frames,
+)
 from gespo.utils.ppi_metrics import (
     PPI_GLOBAL_TOKEN_NAMES,
     PPITokenIndices,
@@ -32,6 +36,7 @@ def compute_globals_from_coords(
     ref_ca_a_nm: Optional[np.ndarray] = None,
     ref_ca_b_nm: Optional[np.ndarray] = None,
     adk_token_indices: Optional[Any] = None,
+    tmem63_token_indices: Optional[Any] = None,
     ppi_token_indices: Optional[PPITokenIndices] = None,
     pocket_ca_local: Optional[np.ndarray] = None,
     pocket_ref_ca_nm: Optional[np.ndarray] = None,
@@ -59,6 +64,8 @@ def compute_globals_from_coords(
         Endpoint A/B CA positions (nm) for RMSD_A / RMSD_B tokens.
     adk_token_indices : Any or None
         ADK token index object from ``build_adk_token_indices``.
+    tmem63_token_indices : Any or None
+        TMEM63 token index object from ``build_tmem63_token_indices``.
     ppi_token_indices : PPITokenIndices or None
         PPI token index object from ``build_ppi_token_indices``.
     """
@@ -128,6 +135,19 @@ def compute_globals_from_coords(
         except Exception:
             adk_vals = None
 
+    # TMEM63 gate-distance/hinge-angle metrics.
+    tmem63_vals = None
+    if tmem63_token_indices is not None and any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
+        try:
+            tmem63_vals = compute_tmem63_global_values_from_frames(
+                coords_list,
+                ca_local=ca_local,
+                ref_ca_nm=ref_ca_nm,
+                idx=tmem63_token_indices,
+            )
+        except Exception:
+            tmem63_vals = None
+
     # Vinculin H5 metrics.
     vinculin_h5_vals = None
     from gespo.utils.vinculin_h5_metrics import VINCULIN_H5_TOKEN_NAMES
@@ -153,6 +173,7 @@ def compute_globals_from_coords(
     # Assemble output columns by token name.
     try:
         adk_name_to_col = {name: i for i, name in enumerate(ADK_GLOBAL_TOKEN_NAMES)}
+        tmem63_name_to_col = {name: i for i, name in enumerate(TMEM63_GLOBAL_TOKEN_NAMES)}
         vinculin_h5_name_to_col = {name: i for i, name in enumerate(VINCULIN_H5_TOKEN_NAMES)}
         ppi_name_to_col = {name: i for i, name in enumerate(PPI_GLOBAL_TOKEN_NAMES)}
         for j, name in enumerate(global_token_names):
@@ -220,6 +241,8 @@ def compute_globals_from_coords(
                         pass
             elif adk_vals is not None and key in adk_name_to_col:
                 out[:, j] = adk_vals[:, adk_name_to_col[key]]
+            elif tmem63_vals is not None and key in tmem63_name_to_col:
+                out[:, j] = tmem63_vals[:, tmem63_name_to_col[key]]
     except Exception:
         pass
 

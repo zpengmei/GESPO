@@ -30,6 +30,8 @@ KNOWN_GLOBAL_TOKEN_SETS = frozenset({
     "adk_domain4", "adk_domain_only", "adk_domain_no_rmsd", "adk_no_rmsd",
     "adk_domain4_rmsd_ab", "adk_domain4_rmsd_a_b",
     "adk_domain4_rmsd_ab_nm", "adk_domain4_rmsd_a_b_nm",
+    # TMEM63 CVs (skeleton; see gespo/utils/tmem63_metrics.py)
+    "tmem63", "tmem63_domain",
     # vinculin H5 bundle
     "vinculin_h5", "vinculin_h5_bundle", "h5_bundle",
     # protein-protein interface
