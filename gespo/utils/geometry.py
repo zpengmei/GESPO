@@ -545,3 +545,178 @@ def calculate_rmsd(coords_traj: np.ndarray, ref_coords: np.ndarray, atom_indices
         start = end
 
     return rmsd_out
+
+# Schuyler's edits (with Claude Code) for constructing TMEM63 metrics
+# ---------------------------------------------------------------------------
+# Batched per-frame geometry primitives for global-token metrics.
+#
+# All functions here take a packed `[F, N, 3]` coordinate array (or plain
+# `[F, 3]` point/vector arrays) and pre-resolved integer atom indices -- no
+# topology, no selection strings. Index resolution (residue numbers -> atom
+# indices) happens once, upstream, in e.g. `gespo/utils/residue_selection.py`
+# and the per-system `*_metrics.py` build_*_token_indices() functions. This
+# split keeps these primitives cheap to call every frame and trivially
+# testable against synthetic coordinates, and keeps them reusable across any
+# system's metrics (ADK, TMEM63B, TMEM63A, ...), not just one.
+# ---------------------------------------------------------------------------
+
+def _require_packed_xyz(xyz_nm: np.ndarray) -> np.ndarray:
+    xyz_nm = np.asarray(xyz_nm, dtype=np.float64)
+    if xyz_nm.ndim != 3 or xyz_nm.shape[-1] != 3:
+        raise ValueError(f"xyz_nm must be [F,N,3], got {xyz_nm.shape}")
+    return xyz_nm
+
+def centroid_from_xyz(xyz_nm: np.ndarray, atom_idx: np.ndarray) -> np.ndarray:
+    """Per-frame centroid (unweighted mean position) of a set of atoms.
+
+    Args:
+        xyz_nm: [F, N, 3] packed coordinates.
+        atom_idx: 1D atom indices, local to xyz_nm's second axis.
+
+    Returns:
+        [F, 3] centroid per frame. Returns zeros if atom_idx is empty, so
+        callers can compose this with e.g. angle_between_vectors (which
+        treats a zero vector as "undefined" -> 0.0 angle) rather than crash
+        on an empty group.
+    """
+    xyz_nm = _require_packed_xyz(xyz_nm)
+    atom_idx = np.asarray(atom_idx, dtype=np.int64).reshape(-1)
+    if atom_idx.size == 0:
+        return np.zeros((xyz_nm.shape[0], 3), dtype=np.float32)
+    return xyz_nm[:, atom_idx, :].mean(axis=1).astype(np.float32, copy=False)
+
+def pairwise_distance_from_xyz(xyz_nm: np.ndarray, a: int, b: int) -> np.ndarray:
+    """Per-frame Euclidean distance between two single atoms."""
+    xyz_nm = _require_packed_xyz(xyz_nm)
+    pa = xyz_nm[:, int(a), :]
+    pb = xyz_nm[:, int(b), :]
+    return np.linalg.norm(pa - pb, axis=1).astype(np.float32, copy=False)
+
+def mean_pairwise_distance_from_xyz(
+    xyz_nm: np.ndarray,
+    group_a_idx: np.ndarray,
+    group_b_idx: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-frame mean of all pairwise distances between two atom groups.
+
+    If group_b_idx is None, computes the mean over all unique (unordered,
+    non-self) pairs within group_a_idx instead. This covers both "average
+    distance between these two clusters of residues" and "average distance
+    among this one scattered set of residues" (e.g. hydrophobic latch
+    residues spanning multiple helices) with a single function.
+
+    Args:
+        xyz_nm: [F, N, 3] packed coordinates.
+        group_a_idx: 1D atom indices.
+        group_b_idx: 1D atom indices, or None to pair group_a_idx with itself.
+
+    Returns:
+        [F] mean pairwise distance per frame. Returns zeros if a group is
+        empty, or (in the single-group case) has fewer than 2 atoms.
+    """
+    xyz_nm = _require_packed_xyz(xyz_nm)
+    n_frames = xyz_nm.shape[0]
+    group_a_idx = np.asarray(group_a_idx, dtype=np.int64).reshape(-1)
+
+    if group_b_idx is None:
+        if group_a_idx.size < 2:
+            return np.zeros((n_frames,), dtype=np.float32)
+        pts = xyz_nm[:, group_a_idx, :]  # [F, Na, 3]
+        iu = np.triu_indices(group_a_idx.size, k=1)
+        diff = pts[:, iu[0], :] - pts[:, iu[1], :]  # [F, P, 3]
+        dist = np.linalg.norm(diff, axis=-1)  # [F, P]
+        return dist.mean(axis=1).astype(np.float32, copy=False)
+
+    group_b_idx = np.asarray(group_b_idx, dtype=np.int64).reshape(-1)
+    if group_a_idx.size == 0 or group_b_idx.size == 0:
+        return np.zeros((n_frames,), dtype=np.float32)
+    pa = xyz_nm[:, group_a_idx, :]  # [F, Na, 3]
+    pb = xyz_nm[:, group_b_idx, :]  # [F, Nb, 3]
+    diff = pa[:, :, None, :] - pb[:, None, :, :]  # [F, Na, Nb, 3]
+    dist = np.linalg.norm(diff, axis=-1)  # [F, Na, Nb]
+    return dist.mean(axis=(1, 2)).astype(np.float32, copy=False)
+
+def angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
+    """Per-frame angle (radians) between two direction-vector arrays, shape [F,3].
+
+    A zero-norm input (degenerate/undefined direction) yields 0.0 for that
+    frame rather than raising or producing NaN, so callers can compose this
+    with e.g. axis_from_xyz_pca on a too-small group without special-casing.
+    """
+    v1 = np.asarray(v1, dtype=np.float64).reshape(-1, 3)
+    v2 = np.asarray(v2, dtype=np.float64).reshape(-1, 3)
+    n1 = np.linalg.norm(v1, axis=1)
+    n2 = np.linalg.norm(v2, axis=1)
+    denom = n1 * n2
+    denom_safe = np.where(denom > 1e-12, denom, 1.0)
+    cosang = np.sum(v1 * v2, axis=1) / denom_safe
+    cosang = np.clip(cosang, -1.0, 1.0)
+    ang = np.arccos(cosang)
+    ang = np.where(denom > 1e-12, ang, 0.0)
+    return ang.astype(np.float32, copy=False)
+
+def calc_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """Angle /_ABC in radians for batched points a,b,c of shape [F,3] (vertex at b)."""
+    a = np.asarray(a, dtype=np.float64).reshape(-1, 3)
+    b = np.asarray(b, dtype=np.float64).reshape(-1, 3)
+    c = np.asarray(c, dtype=np.float64).reshape(-1, 3)
+    return angle_between_vectors(a - b, c - b)
+
+def axis_from_xyz_pca(xyz_nm: np.ndarray, atom_idx: np.ndarray) -> np.ndarray:
+    """Per-frame principal axis (unit vector) of a set of atoms via PCA/SVD.
+
+    PCA gives an axis but not a direction. The sign is anchored each frame by
+    comparing against the vector from the centroid of the first half of
+    `atom_idx` to the centroid of the second half, so the returned axis
+    doesn't flip ~180 degrees frame-to-frame. Callers must therefore pass
+    `atom_idx` pre-ordered along the region's natural direction (e.g. N- to
+    C-terminal residue order for a helix segment) for this to be meaningful.
+
+    Args:
+        xyz_nm: [F, N, 3] packed coordinates.
+        atom_idx: 1D atom indices defining the region.
+
+    Returns:
+        [F, 3] unit axis vectors. Returns zeros if fewer than 2 atoms are
+        given -- an all-zero vector is angle_between_vectors' "undefined"
+        sentinel, so downstream angle metrics degrade to 0.0 rather than
+        raising.
+    """
+    xyz_nm = _require_packed_xyz(xyz_nm)
+    atom_idx = np.asarray(atom_idx, dtype=np.int64).reshape(-1)
+    n_frames = xyz_nm.shape[0]
+    if atom_idx.size < 2:
+        return np.zeros((n_frames, 3), dtype=np.float32)
+
+    pts = xyz_nm[:, atom_idx, :]  # [F, N, 3]
+    center = pts.mean(axis=1, keepdims=True)
+    centered = pts - center
+    # Batched SVD over the leading frame axis; the top right-singular vector
+    # (largest singular value) is the first principal component.
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    axis = vt[:, 0, :]  # [F, 3]
+
+    half = max(1, atom_idx.size // 2)
+    first_half_centroid = pts[:, :half, :].mean(axis=1)
+    second_half_centroid = pts[:, half:, :].mean(axis=1) if half < atom_idx.size else first_half_centroid
+    direction = second_half_centroid - first_half_centroid
+    sign = np.sign(np.sum(axis * direction, axis=1))
+    sign = np.where(sign == 0, 1.0, sign)
+    axis = axis * sign[:, None]
+
+    norm = np.linalg.norm(axis, axis=1, keepdims=True)
+    norm_safe = np.where(norm > 1e-12, norm, 1.0)
+    axis = axis / norm_safe
+    return axis.astype(np.float32, copy=False)
+
+def angle_to_axis_from_xyz(
+    xyz_nm: np.ndarray,
+    atom_idx: np.ndarray,
+    axis: Tuple[float, float, float] = (0.0, 0.0, 1.0),
+) -> np.ndarray:
+    """Per-frame angle (radians) between a region's fitted principal axis and a
+    fixed reference axis (e.g. the membrane normal / simulation-box z-axis)."""
+    region_axis = axis_from_xyz_pca(xyz_nm, atom_idx)
+    n_frames = region_axis.shape[0]
+    ref = np.repeat(np.asarray(axis, dtype=np.float64).reshape(1, 3), n_frames, axis=0)
+    return angle_between_vectors(region_axis, ref)

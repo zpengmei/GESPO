@@ -11,6 +11,7 @@ from typing import Any, List, Optional
 import numpy as np
 
 from gespo.utils.geometry import calculate_rmsd
+from gespo.utils.log import warn as log_warn
 from gespo.utils.adk_metrics import (
     ADK_GLOBAL_TOKEN_NAMES,
     compute_adk_global_values_from_frames,
@@ -135,17 +136,26 @@ def compute_globals_from_coords(
         except Exception:
             adk_vals = None
 
-    # TMEM63 gate-distance/hinge-angle metrics.
+    # TMEM63 metrics (RMSD / membrane angles / latch & neck distances / hinge
+    # angles / IL2-TM6b distance). Unlike ADK, TMEM63's RMSD atom selection is
+    # config-defined per region (not necessarily CA-only), so it isn't
+    # expressed through the shared ca_local/ref_ca_nm pair above; tm_rmsd_nm
+    # simply stays 0 (with a logged warning, see tmem63_metrics.py) until a
+    # dedicated tmem63_ref_rmsd_nm is threaded through here to match
+    # tmem63_token_indices.rmsd_atom_idx once TMEM63B_RESIDUE_CONFIG.rmsd_regions
+    # is filled in.
     tmem63_vals = None
     if tmem63_token_indices is not None and any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
         try:
             tmem63_vals = compute_tmem63_global_values_from_frames(
                 coords_list,
-                ca_local=ca_local,
-                ref_ca_nm=ref_ca_nm,
                 idx=tmem63_token_indices,
             )
-        except Exception:
+        except Exception as exc:
+            log_warn(
+                f"[analysis.metrics] compute_tmem63_global_values_from_frames failed, "
+                f"TMEM63 global tokens will be all-zero this batch: {type(exc).__name__}: {exc}"
+            )
             tmem63_vals = None
 
     # Vinculin H5 metrics.
