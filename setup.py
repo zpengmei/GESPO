@@ -18,6 +18,7 @@ setup(
         "scipy",
         "torch",
         "mdtraj",
+        "MDAnalysis", # NOTE: Only used for helix hinge tmem63 global metrics
         "pyyaml",
         "matplotlib",
         "scikit-learn",

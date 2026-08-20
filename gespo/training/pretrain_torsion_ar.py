@@ -14,6 +14,14 @@ from ..utils.adk_metrics import (
     build_adk_token_indices,
     compute_adk_global_values_from_xyz,
 )
+from ..utils.tmem63_metrics import (
+    ACTIVE_TMEM63_RESIDUE_CONFIG,
+    TMEM63_GLOBAL_TOKEN_NAMES,
+    TMEM63_TOKEN_SET_COLUMNS,
+    TMEM63ResidueConfig,
+    build_tmem63_token_indices,
+    compute_tmem63_global_values_from_xyz,
+)
 from ..utils.selection import infer_protein_atom_indices, is_subset_selection
 # Token-set / torsion-mode names + validators live in a dependency-light module
 # (no OpenMM/torch) so the CLI and docs can reuse them; re-exported here for
@@ -82,6 +90,72 @@ def _load_npz_dataset(path: str, *, torsion_mode: str = "backbone"):
     residue_types = data["residue_types"] if "residue_types" in data else None
     global_values = data["global_values"] if "global_values" in data else None
     return torsions, angle_mask, residue_types, global_values
+
+
+def _build_tmem63_ref_rmsd_nm(
+    ref_topology,
+    ref_xyz0: np.ndarray,
+    tr_topology,
+    rmsd_atom_idx_tr: np.ndarray,
+    residue_config: Optional[TMEM63ResidueConfig] = None,
+) -> Optional[np.ndarray]:
+    """Reference-structure coordinates for tm_rmsd_nm, aligned to
+    rmsd_atom_idx_tr's order.
+
+    Module-level (not nested in _build_torsion_dataset_from_dcd, unlike its
+    sibling helpers there) since it captures no outer-scope state -- everything
+    it needs is an explicit parameter -- which makes it independently testable.
+    `residue_config` defaults to ACTIVE_TMEM63_RESIDUE_CONFIG (gespo/utils/tmem63_metrics.py's
+    single switch point for which TMEM63 construct is being trained), resolved
+    at call time -- not bound as the literal default value -- so it always
+    reflects that module's current setting rather than whatever it was when
+    this function was first imported. Override per call if you ever need a
+    reference built against a different construct than the active one.
+
+    Mirrors _build_torsion_dataset_from_dcd's ADK RMSD-to-endpoint-A alignment:
+    `tr_topology` and `ref_topology` aren't guaranteed to share the same atom
+    ordering even for the same construct, so atoms are matched by (resSeq,
+    atom name) rather than assumed to land in the same position. Returns None
+    (not a best-effort guess) if the reference structure doesn't resolve the
+    same rmsd_regions, or is missing any atom rmsd_atom_idx_tr needs -- the
+    caller passes that through to compute_tmem63_global_values_from_xyz, which
+    already skips tm_rmsd_nm cleanly (with a logged warning) when no reference
+    is supplied, rather than computing RMSD against a partially wrong reference.
+    """
+    if residue_config is None:
+        residue_config = ACTIVE_TMEM63_RESIDUE_CONFIG
+    try:
+        ref_idx = build_tmem63_token_indices(
+            ref_topology,
+            residue_config,
+            token_names=("tm_rmsd_nm",),
+            protein_indices=np.arange(int(getattr(ref_topology, "n_atoms", 0) or 0), dtype=np.int64),
+        )
+    except Exception:
+        return None
+    ref_atom_idx = ref_idx.rmsd_atom_idx
+    if ref_atom_idx is None or ref_atom_idx.size == 0:
+        return None
+
+    def _resseq_name_key(topology, atom_index: int):
+        atom = topology.atom(int(atom_index))
+        res = atom.residue
+        try:
+            resseq = int(getattr(res, "resSeq", res.index))
+        except Exception:
+            resseq = int(res.index)
+        return (resseq, str(atom.name))
+
+    ref_coord_by_key = {
+        _resseq_name_key(ref_topology, i): ref_xyz0[int(i)] for i in ref_atom_idx.tolist()
+    }
+    aligned = []
+    for i in np.asarray(rmsd_atom_idx_tr, dtype=np.int64).reshape(-1).tolist():
+        key = _resseq_name_key(tr_topology, i)
+        if key not in ref_coord_by_key:
+            return None
+        aligned.append(ref_coord_by_key[key])
+    return np.asarray(aligned, dtype=np.float64).reshape(-1, 3)
 
 
 def _build_torsion_dataset_from_dcd(
@@ -297,6 +371,13 @@ def _build_torsion_dataset_from_dcd(
         "ppi_tokens",
         "chain_com_dist_nm,min_interface_ca_dist_nm,q_interface",
     }
+    # TMEM63 CVs. Unlike ADK's domain4/full split (a plain trailing slice of
+    # one 5-column array), these named subsets pick non-contiguous columns out
+    # of the full 9 (see TMEM63_TOKEN_SET_COLUMNS), so the column selection is
+    # done by name below rather than by slicing.
+    tmem63_columns = TMEM63_TOKEN_SET_COLUMNS.get(token_set)
+    use_tmem63 = tmem63_columns is not None
+    use_tmem63_rmsd = use_tmem63 and "tm_rmsd_nm" in tmem63_columns
 
     def _select_ca_indices(top) -> np.ndarray:
         """Prefer protein CA selection, but fall back to name-only if topology lacks protein flags."""
@@ -710,6 +791,42 @@ def _build_torsion_dataset_from_dcd(
                 print(f"[TorsionAR Pretrain] Warning: vinculin_h5 globals failed for {os.path.basename(fpath)}: {exc}")
                 from gespo.utils.vinculin_h5_metrics import VINCULIN_H5_TOKEN_NAMES
                 glob_block = np.zeros((n_frames, len(VINCULIN_H5_TOKEN_NAMES)), dtype=np.float32)
+        elif use_tmem63:
+            # tmem63_columns names exactly which of the 9 TMEM63_GLOBAL_TOKEN_NAMES
+            # columns this token set uses, and in what order (see
+            # TMEM63_TOKEN_SET_COLUMNS / gespo/training/token_sets.py's comments).
+            try:
+                # ACTIVE_TMEM63_RESIDUE_CONFIG (gespo/utils/tmem63_metrics.py) is the
+                # single switch point for which TMEM63 construct is being trained --
+                # reassign it there, not here, to point at TMEM63A or a custom config.
+                tmem63_idx = build_tmem63_token_indices(
+                    tr.topology,
+                    ACTIVE_TMEM63_RESIDUE_CONFIG,
+                    token_names=tmem63_columns,
+                    protein_indices=np.arange(int(tr.n_atoms), dtype=np.int64),
+                )
+                ref_rmsd_nm = None
+                if use_tmem63_rmsd:
+                    ref_rmsd_nm = _build_tmem63_ref_rmsd_nm(
+                        ref_top,
+                        ref.xyz[0].astype(np.float64),
+                        tr.topology,
+                        tmem63_idx.rmsd_atom_idx,
+                        residue_config=ACTIVE_TMEM63_RESIDUE_CONFIG,
+                    )
+                    if ref_rmsd_nm is None:
+                        print(
+                            f"[TorsionAR Pretrain] Warning: could not align a tm_rmsd_nm reference for "
+                            f"{os.path.basename(fpath)}; that column will be 0 for this trajectory."
+                        )
+                full9 = compute_tmem63_global_values_from_xyz(
+                    tr.xyz, idx=tmem63_idx, ref_rmsd_nm=ref_rmsd_nm
+                ).astype(np.float32, copy=False)
+                tmem63_col_of = {name: i for i, name in enumerate(TMEM63_GLOBAL_TOKEN_NAMES)}
+                glob_block = np.stack([full9[:, tmem63_col_of[name]] for name in tmem63_columns], axis=1)
+            except Exception as exc:
+                print(f"[TorsionAR Pretrain] Warning: TMEM63 globals failed for {os.path.basename(fpath)}: {exc}")
+                glob_block = np.zeros((n_frames, len(tmem63_columns)), dtype=np.float32)
         else:
             # Default globals: CA RMSD to reference + end-to-end CA distance (+ optional Rg).
             try:
@@ -1071,6 +1188,14 @@ def pretrain_torsion_ar(
                 token_names = ["rmsd_nm", "e2e_nm", "pocket_rmsd_nm", "n_contacts_scaled", "lig_pocket_dist_nm"]
             elif token_set in {"rmsd_e2e_pocket", "rmsd_e2e_pocket3"} and n_global_tokens == 3:
                 token_names = ["rmsd_nm", "e2e_nm", "pocket_rmsd_nm"]
+            elif token_set in TMEM63_TOKEN_SET_COLUMNS and n_global_tokens == len(TMEM63_TOKEN_SET_COLUMNS[token_set]):
+                # Matched by exact token_set name, not by column count alone: several
+                # TMEM63 subsets share a column count with an existing scheme (e.g.
+                # tmem63_dists=4 collides with adk_domain4=4), so this must come before
+                # -- and never fall through to -- the bare n_global_tokens==N catch-alls
+                # below, or a TMEM63 dataset would get silently mislabeled with another
+                # scheme's names.
+                token_names = list(TMEM63_TOKEN_SET_COLUMNS[token_set])
             elif n_global_tokens == 2:
                 token_names = ["rmsd_nm", "e2e_nm"]
             elif n_global_tokens == 3:

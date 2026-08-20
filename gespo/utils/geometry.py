@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import mdtraj as md
 import numpy as np
@@ -592,12 +592,92 @@ def pairwise_distance_from_xyz(xyz_nm: np.ndarray, a: int, b: int) -> np.ndarray
     pb = xyz_nm[:, int(b), :]
     return np.linalg.norm(pa - pb, axis=1).astype(np.float32, copy=False)
 
+def inter_group_atom_pairs(groups: Sequence[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """Enumerate every atom-index pair (i, j) drawn from two *different* groups.
+
+    Given e.g. one atom-index array per residue, returns every pair of atoms
+    belonging to different groups -- explicitly excluding same-group (e.g.
+    same-residue) pairs -- as two parallel index arrays suitable for
+    mean_paired_distance_from_xyz. This is how to compute a strictly
+    *inter*-residue mean distance for a multi-atom-per-residue selection
+    (e.g. AtomSelectionMode.ALL_HEAVY), where naively self-pairing the whole
+    flattened atom set (see mean_pairwise_distance_from_xyz below) would
+    include same-residue atom-atom distances that aren't of interest.
+
+    Args:
+        groups: one 1D atom-index array per group (e.g. per residue). Empty
+            groups are dropped; fewer than 2 non-empty groups yields empty
+            pair arrays.
+
+    Returns:
+        (idx_a, idx_b): parallel int64 arrays, one entry per pair.
+    """
+    non_empty = [np.asarray(g, dtype=np.int64).reshape(-1) for g in groups]
+    non_empty = [g for g in non_empty if g.size > 0]
+    pairs_i, pairs_j = [], []
+    for gi in range(len(non_empty)):
+        for gj in range(gi + 1, len(non_empty)):
+            ai, bj = np.meshgrid(non_empty[gi], non_empty[gj], indexing="ij")
+            pairs_i.append(ai.reshape(-1))
+            pairs_j.append(bj.reshape(-1))
+    if not pairs_i:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0,), dtype=np.int64)
+    return np.concatenate(pairs_i), np.concatenate(pairs_j)
+
+
+def mean_paired_distance_from_xyz(
+    xyz_nm: np.ndarray,
+    idx_a: np.ndarray,
+    idx_b: np.ndarray,
+) -> np.ndarray:
+    """Per-frame mean distance over an explicit list of atom-index pairs.
+
+    Unlike mean_pairwise_distance_from_xyz (which enumerates *every*
+    combination within/between whole groups), this takes an already-built
+    parallel pair list -- (idx_a[k], idx_b[k]) for each k -- and just
+    averages those specific distances. Intended to be paired with
+    inter_group_atom_pairs() when "distance between residues" must exclude
+    same-residue atom-atom pairs.
+
+    Args:
+        xyz_nm: [F, N, 3] packed coordinates.
+        idx_a, idx_b: parallel 1D atom-index arrays (same length).
+
+    Returns:
+        [F] mean distance per frame. Returns zeros if idx_a/idx_b are empty.
+    """
+    xyz_nm = _require_packed_xyz(xyz_nm)
+    idx_a = np.asarray(idx_a, dtype=np.int64).reshape(-1)
+    idx_b = np.asarray(idx_b, dtype=np.int64).reshape(-1)
+    if idx_a.size != idx_b.size:
+        raise ValueError(f"idx_a and idx_b must have the same length, got {idx_a.size} and {idx_b.size}")
+    n_frames = xyz_nm.shape[0]
+    if idx_a.size == 0:
+        return np.zeros((n_frames,), dtype=np.float32)
+    pa = xyz_nm[:, idx_a, :]
+    pb = xyz_nm[:, idx_b, :]
+    dist = np.linalg.norm(pa - pb, axis=-1)
+    return dist.mean(axis=1).astype(np.float32, copy=False)
+
+
 def mean_pairwise_distance_from_xyz(
     xyz_nm: np.ndarray,
     group_a_idx: np.ndarray,
     group_b_idx: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Per-frame mean of all pairwise distances between two atom groups.
+
+    CAUTION: if group_b_idx is None, every pair *within* group_a_idx is
+    included -- if group_a_idx can contain more than one atom belonging to
+    the same logical unit (e.g. several heavy atoms of one residue), those
+    intra-unit pairs are included too. That's correct when each unit
+    contributes exactly one atom (e.g. one CA per residue); when it doesn't
+    (e.g. AtomSelectionMode.ALL_HEAVY, several atoms per residue) and only
+    *inter*-unit distances are of interest, build the pair list with
+    inter_group_atom_pairs() (one array per residue) and use
+    mean_paired_distance_from_xyz() instead -- see
+    tmem63_metrics.py's hydrophobic_latch_dist_nm / neck_dist_nm for the
+    pattern.
 
     If group_b_idx is None, computes the mean over all unique (unordered,
     non-self) pairs within group_a_idx instead. This covers both "average

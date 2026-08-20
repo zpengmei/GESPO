@@ -24,15 +24,33 @@ system's metrics file. Residue-number -> atom-index resolution (including the
 configurable backbone / backbone+CB / all-heavy / all-atom granularity) lives
 in gespo/utils/selection.py, for the same reason.
 
+tm6_hinge_angle_rad uses the pure-numpy pivot-split approach above (angle
+between two rigid sub-segments split at a known pivot residue, G580).
+tm3_hinge_angle_rad / tm5_hinge_angle_rad don't have a known pivot residue,
+so instead of guessing one, they're computed via MDAnalysis's HELANAL --
+local helix-bending angles along the whole region, reporting the maximum,
+which needs only a residue *range* rather than a precise split point. This
+is the one place in this file that reaches for MDAnalysis rather than pure
+numpy: the Universe/AtomGroup involved are built once, at build time (see
+_build_helix_curvature_indices), and only their coordinates are swapped in at
+compute time -- everything else in this module still only ever
+produces/consumes plain numpy index arrays.
+
 All distances are in nm; angles are in radians.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
+import mdtraj as md
+import MDAnalysis as mda
 import numpy as np
+from MDAnalysis.analysis.helix_analysis import HELANAL
+from MDAnalysis.coordinates.memory import MemoryReader
 
 from .geometry import (
     angle_between_vectors,
@@ -40,10 +58,21 @@ from .geometry import (
     axis_from_xyz_pca,
     calculate_rmsd,
     centroid_from_xyz,
-    mean_pairwise_distance_from_xyz,
+    inter_group_atom_pairs,
+    mean_paired_distance_from_xyz,
 )
 from .log import warn as _log_warn
-from .selection import AtomSelectionMode, select_atoms_for_residues
+from .selection import (
+    AtomSelectionMode,
+    expand_residue_range,
+    reindexed_topology_subset,
+    select_atoms_by_residue,
+    select_atoms_for_residues,
+)
+
+# HELANAL's local_bends has n_residues - 6 entries; need at least 1.
+_HELANAL_MIN_RESIDUES = 7
+_NM_TO_ANGSTROM = 10.0  # GESPO coordinates are nm; MDAnalysis's native unit is Angstrom.
 
 
 TMEM63_GLOBAL_TOKEN_NAMES: Tuple[str, ...] = (
@@ -60,6 +89,45 @@ TMEM63_GLOBAL_TOKEN_NAMES: Tuple[str, ...] = (
 
 # TMEM63 domain-only globals (no RMSD). Same idea as ADK_DOMAIN_TOKEN_NAMES.
 TMEM63_DOMAIN_TOKEN_NAMES: Tuple[str, ...] = TMEM63_GLOBAL_TOKEN_NAMES[1:]
+
+# Narrower named subsets, registered as their own --global-token-set values in
+# gespo/training/token_sets.py. Each "_only" variant drops tm_rmsd_nm from its
+# non-"_only" counterpart, same relationship as TMEM63_DOMAIN_TOKEN_NAMES to
+# TMEM63_GLOBAL_TOKEN_NAMES.
+TMEM63_DISTS_TOKEN_NAMES: Tuple[str, ...] = (
+    "tm_rmsd_nm", "hydrophobic_latch_dist_nm", "neck_dist_nm", "il2_tm6b_dist_nm",
+)
+TMEM63_DISTS_ONLY_TOKEN_NAMES: Tuple[str, ...] = TMEM63_DISTS_TOKEN_NAMES[1:]
+
+TMEM63_HEL_HINGES_TOKEN_NAMES: Tuple[str, ...] = (
+    "tm_rmsd_nm", "tm6_hinge_angle_rad", "tm3_hinge_angle_rad", "tm5_hinge_angle_rad",
+)
+TMEM63_HEL_HINGES_ONLY_TOKEN_NAMES: Tuple[str, ...] = TMEM63_HEL_HINGES_TOKEN_NAMES[1:]
+
+TMEM63_HEL_TILTS_TOKEN_NAMES: Tuple[str, ...] = (
+    "tm_rmsd_nm", "tm6_membrane_angle_rad", "tm4_membrane_angle_rad",
+)
+TMEM63_HEL_TILTS_ONLY_TOKEN_NAMES: Tuple[str, ...] = TMEM63_HEL_TILTS_TOKEN_NAMES[1:]
+
+# --global-token-set string (see gespo/training/token_sets.py's KNOWN_GLOBAL_TOKEN_SETS
+# comments) -> the exact, ordered column tuple it means. The single canonical
+# lookup both pretrain_torsion_ar.py (computing historical values) and any
+# other TMEM63-token-set consumer should use, rather than re-deriving this
+# mapping in more than one place.
+TMEM63_TOKEN_SET_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "tmem63": TMEM63_GLOBAL_TOKEN_NAMES,
+    # NOTE: "tmem63_domain" (TMEM63_DOMAIN_TOKEN_NAMES) is deliberately not
+    # listed here -- it isn't registered in token_sets.py's
+    # KNOWN_GLOBAL_TOKEN_SETS (only the 7 names below are), so
+    # --global-token-set tmem63_domain wouldn't pass validation anyway. The
+    # tuple itself is still exported for direct Python-API use.
+    "tmem63_dists": TMEM63_DISTS_TOKEN_NAMES,
+    "tmem63_dists_only": TMEM63_DISTS_ONLY_TOKEN_NAMES,
+    "tmem63_hel_hinges": TMEM63_HEL_HINGES_TOKEN_NAMES,
+    "tmem63_hel_hinges_only": TMEM63_HEL_HINGES_ONLY_TOKEN_NAMES,
+    "tmem63_hel_tilts": TMEM63_HEL_TILTS_TOKEN_NAMES,
+    "tmem63_hel_tilts_only": TMEM63_HEL_TILTS_ONLY_TOKEN_NAMES,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +169,26 @@ class HingeSpec:
 
 
 @dataclass(frozen=True)
+class HelixCurvatureSpec:
+    """A residue range defining a helix segment for HELANAL-based local
+    curvature/bending-angle analysis -- used when no single pivot residue for
+    a HingeSpec-style split is known or well-characterized (e.g. TM3/TM5),
+    unlike TM6 where a literature-sourced pivot (G580) makes HingeSpec the
+    better fit. Always resolved as a CA trace (HELANAL's own convention), so
+    there's no atom_mode choice here, unlike RegionSpec.
+
+    `residues` needs at least _HELANAL_MIN_RESIDUES entries and, in practice,
+    should be a single contiguous, unbroken run of residue numbers (HELANAL
+    fits local axes from consecutive Cα positions; a gap partway through the
+    range would either raise or silently split into a separate sub-helix,
+    losing the ability to detect a bend that spans the gap).
+    """
+
+    residues: Tuple[int, ...]
+    ref_axis: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+
+@dataclass(frozen=True)
 class TMEM63ResidueConfig:
     """Residue-number configuration for one TMEM63 paralog/construct.
 
@@ -126,32 +214,50 @@ class TMEM63ResidueConfig:
     hydrophobic_latch: Optional[RegionSpec] = None
     neck: Optional[RegionSpec] = None
 
-    # tm6_hinge_angle_rad / tm3_hinge_angle_rad / tm5_hinge_angle_rad
+    # tm6_hinge_angle_rad: pivot-split angle (G580 is a known, literature-sourced pivot).
     tm6_hinge: Optional[HingeSpec] = None
-    tm3_hinge: Optional[HingeSpec] = None
-    tm5_hinge: Optional[HingeSpec] = None
+
+    # tm3_hinge_angle_rad / tm5_hinge_angle_rad: max local HELANAL bending
+    # angle over the region -- no known pivot for these, so a residue range
+    # is all that's needed (see HelixCurvatureSpec).
+    tm3_curvature_region: Optional[HelixCurvatureSpec] = None
+    tm5_curvature_region: Optional[HelixCurvatureSpec] = None
 
     # il2_tm6b_dist_nm: centroid-to-centroid distance between these two regions.
     il2_hinge_region: Optional[RegionSpec] = None
     tm6b_loop_region: Optional[RegionSpec] = None
 
 
-# --- TMEM63B: filled in from tmem63b_gespo.md where residue numbers are known. ---
-#
-# Most fields are still None on purpose. tmem63b_gespo.md doesn't yet give TM
-# helix boundaries (needed for tm_rmsd_nm and the membrane-angle regions), TM3/
-# TM5 hinge pivots, neck residues, or the IL2H2-vs-H3 / TM6b-loop ranges (the
-# doc's own note: "Ask Malavika what residues she's using to measure opening").
-# Only the hydrophobic latch residues are fully specified today. Requesting a
-# token column that needs an unset field raises NotImplementedError naming
-# that field, rather than silently guessing a residue range.
-#
-# TM6's pivot residue (G580, the pi-helix hinge point) *is* known, but a hinge
-# angle also needs the N-/C-side sub-segment ranges around it, which aren't
-# pinned down yet -- so tm6_hinge is left unset too, with the pivot noted here
-# for when those ranges are filled in.
+# --- TMEM63B: filled in from tmem63b_gespo.md's "Exact TMEM63B Metric
+# Residues" section. Only `neck` is still unset -- tmem63b_gespo.md notes
+# "Will find later" for those residues, so requesting neck_dist_nm still
+# raises NotImplementedError naming that field, rather than guessing.
+# Every other field below is a direct transcription of that section; if the
+# ranges there change, update here to match (and vice versa).
 TMEM63B_RESIDUE_CONFIG = TMEM63ResidueConfig(
     label="TMEM63B",
+    # TM0-TM10 helix boundaries, union used for tm_rmsd_nm. Backbone-only:
+    # the conventional RMSD choice, avoids sidechain-rotamer noise inflating it.
+    rmsd_regions={
+        "TM0": RegionSpec(residues=expand_residue_range(40, 66), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM1": RegionSpec(residues=expand_residue_range(146, 178), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM2": RegionSpec(residues=expand_residue_range(203, 229), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM3": RegionSpec(residues=expand_residue_range(428, 458), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM4": RegionSpec(residues=expand_residue_range(474, 502), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM5": RegionSpec(residues=expand_residue_range(507, 549), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM6": RegionSpec(residues=expand_residue_range(566, 587), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM7": RegionSpec(residues=expand_residue_range(620, 638), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM8": RegionSpec(residues=expand_residue_range(643, 667), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM9": RegionSpec(residues=expand_residue_range(674, 702), atom_mode=AtomSelectionMode.BACKBONE),
+        "TM10": RegionSpec(residues=expand_residue_range(707, 730), atom_mode=AtomSelectionMode.BACKBONE),
+    },
+    # "Angle of TM6 above G580 relative to membrane z-axis" -- same residue
+    # range as tm6_hinge.n_side below (both are "TM6 above G580"), just used
+    # for a different geometric comparison (angle-to-fixed-axis here, vs.
+    # angle-between-two-fitted-axes for the hinge).
+    tm6_membrane_region=RegionSpec(residues=expand_residue_range(566, 579)),
+    # "Angle of TM4 relative to membrane z-axis" -- TM4's full range.
+    tm4_membrane_region=RegionSpec(residues=expand_residue_range(474, 502)),
     hydrophobic_latch=RegionSpec(
         # V44/L47 (TM0), I474/I475/F478/F479/L482/L483 (TM4), A575/I579 (TM6).
         residues=(44, 47, 474, 475, 478, 479, 482, 483, 575, 579),
@@ -160,16 +266,64 @@ TMEM63B_RESIDUE_CONFIG = TMEM63ResidueConfig(
         # point of this metric, so use every heavy atom.
         atom_mode=AtomSelectionMode.ALL_HEAVY,
     ),
-    # tm6_hinge pivot_resid=580 (G580) once n_side/c_side ranges are known.
+    neck=RegionSpec(
+        # ILE434, THR462, LEU515, PHE549, TYR618
+        residues=(434, 462, 515, 549, 618),
+        # The side chains of these residues constrict the pore, so we want
+        # to include all heavy atoms instead of just the backbone
+        atom_mode=AtomSelectionMode.ALL_HEAVY,
+    ),
+    tm6_hinge=HingeSpec(
+        pivot_resid=580,  # G580, the pi-helix hinge point
+        n_side=RegionSpec(residues=expand_residue_range(566, 579)),  # TM6 above G580
+        c_side=RegionSpec(residues=expand_residue_range(581, 587)),  # TM6 below G580
+    ),
+    # "Use built-in MDAnalysis HELANAL on the TM3 and TM5 ranges" (tmem63b_gespo.md).
+    tm3_curvature_region=HelixCurvatureSpec(residues=expand_residue_range(428, 458)),
+    tm5_curvature_region=HelixCurvatureSpec(residues=expand_residue_range(507, 549)),
+    il2_hinge_region=RegionSpec(residues=expand_residue_range(285, 305)),
+    tm6b_loop_region=RegionSpec(residues=expand_residue_range(589, 614)),
 )
 
 # --- TMEM63A: same shape, entirely unfilled until its numbering is available. ---
 TMEM63A_RESIDUE_CONFIG = TMEM63ResidueConfig(label="TMEM63A")
 
 
+# The residue configuration GESPO's training/pretraining call sites actually
+# use (gespo/loops/generative.py, gespo/training/pretrain_torsion_ar.py) --
+# they import and reference this name, not TMEM63B_RESIDUE_CONFIG /
+# TMEM63A_RESIDUE_CONFIG directly. This is the single place to change which
+# TMEM63 construct GESPO trains against: reassign it to TMEM63A_RESIDUE_CONFIG,
+# or to any TMEM63ResidueConfig you build yourself (a modified TMEM63B, a
+# specific mutant, etc.) -- it isn't restricted to the two configs already
+# defined in this file.
+ACTIVE_TMEM63_RESIDUE_CONFIG: TMEM63ResidueConfig = TMEM63B_RESIDUE_CONFIG # TODO: Assign this the active TMEM63ResidueConfig
+
+
 # ---------------------------------------------------------------------------
 # Build phase: residue_config -> TMEM63TokenIndices (once, from a topology).
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HelixCurvatureIndices:
+    """A pre-built MDAnalysis Universe + CA AtomGroup for HELANAL-based local
+    helix curvature, resolved once at build time (see
+    _build_helix_curvature_indices). New coordinates are swapped in at
+    compute time via universe.load_new(...) -- the Universe/AtomGroup are
+    never rebuilt per call.
+
+    Not thread-safe to share across concurrent compute calls: `universe`'s
+    coordinates are mutated in place on every _compute_helix_curvature_via_helanal
+    call. Fine for the sequential build-once/compute-many-but-one-at-a-time
+    pattern used elsewhere in this module; would need a lock (or a per-call
+    Universe) if this is ever called concurrently on the same
+    TMEM63TokenIndices object from multiple threads.
+    """
+
+    universe: "mda.Universe"
+    ca_atomgroup: "mda.AtomGroup"
+    ref_axis: Tuple[float, float, float]
+
 
 @dataclass(frozen=True)
 class TMEM63TokenIndices:
@@ -179,11 +333,15 @@ class TMEM63TokenIndices:
     rmsd_atom_idx: Optional[np.ndarray] = None
     tm6_membrane_atom_idx: Optional[np.ndarray] = None
     tm4_membrane_atom_idx: Optional[np.ndarray] = None
-    hydrophobic_latch_atom_idx: Optional[np.ndarray] = None
-    neck_atom_idx: Optional[np.ndarray] = None
+    # Explicit inter-residue atom-index pairs (see geometry.inter_group_atom_pairs),
+    # not flattened atom-index arrays -- these regions can have multiple atoms
+    # per residue (e.g. AtomSelectionMode.ALL_HEAVY), and only *inter*-residue
+    # distances are of interest for a packing/proximity metric like this.
+    hydrophobic_latch_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    neck_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None
     tm6_hinge_sides: Optional[Tuple[np.ndarray, np.ndarray]] = None
-    tm3_hinge_sides: Optional[Tuple[np.ndarray, np.ndarray]] = None
-    tm5_hinge_sides: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    tm3_curvature: Optional[HelixCurvatureIndices] = None
+    tm5_curvature: Optional[HelixCurvatureIndices] = None
     il2_hinge_atom_idx: Optional[np.ndarray] = None
     tm6b_loop_atom_idx: Optional[np.ndarray] = None
 
@@ -246,6 +404,130 @@ def _resolve_region_atoms(
     return local_idx
 
 
+def _resolve_region_inter_residue_pairs(
+    topology,
+    spec: RegionSpec,
+    protein_map: Dict[int, int],
+    state: _ResolverState,
+    *,
+    label: str,
+    field_name: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Resolve a RegionSpec to an explicit *inter*-residue atom-index pair list.
+
+    Unlike _resolve_region_atoms (one flattened array, used for RMSD/axis-fit/
+    centroid regions where all atoms are treated as one unit), this keeps each
+    matched residue's atoms as a separate group and pairs atoms only across
+    different residues (geometry.inter_group_atom_pairs) -- so a metric like
+    "average distance between hydrophobic latch residues" doesn't include
+    same-residue atom-atom distances (e.g. N-CB within one residue), which
+    aren't of interest for an inter-residue packing metric.
+
+    Raises:
+        ValueError: fewer than 2 distinct residues resolved to at least one
+            atom (under either resSeq or 0-based-index numbering, and after
+            mapping into protein_indices) -- an inter-residue distance is
+            undefined with 0 or 1 residues.
+    """
+    grouped = select_atoms_by_residue(topology, spec.residues, spec.atom_mode, use_resseq=state.use_resseq)
+    if len(grouped) < 2 and state.use_resseq:
+        state.use_resseq = False
+        grouped = select_atoms_by_residue(topology, spec.residues, spec.atom_mode, use_resseq=state.use_resseq)
+
+    local_groups = []
+    for resnum, global_idx in grouped.items():
+        local_idx = np.asarray(
+            [protein_map[int(i)] for i in global_idx.tolist() if int(i) in protein_map],
+            dtype=np.int64,
+        )
+        if local_idx.size > 0:
+            local_groups.append(local_idx)
+
+    if len(local_groups) < 2:
+        raise ValueError(
+            f"TMEM63ResidueConfig '{label}': region '{field_name}' (residues="
+            f"{spec.residues}, mode={spec.atom_mode.value}) resolved atoms for "
+            f"fewer than 2 distinct residues inside the given protein_indices "
+            f"subset -- an inter-residue distance needs at least 2. Check the "
+            f"residue numbers and that protein_indices covers this region."
+        )
+    return inter_group_atom_pairs(local_groups)
+
+
+def _build_helix_curvature_indices(
+    topology,
+    spec: HelixCurvatureSpec,
+    protein_indices: np.ndarray,
+    *,
+    label: str,
+    field_name: str,
+) -> HelixCurvatureIndices:
+    """Build a reusable MDAnalysis Universe + CA AtomGroup for HELANAL-based
+    local helix-curvature analysis (see _compute_helix_curvature_via_helanal).
+
+    This is the one place in this file that constructs an MDAnalysis object.
+    Done once here, at build time -- only the Universe's coordinates get
+    swapped in later, at compute time.
+
+    There's no direct MDTraj -> MDAnalysis topology bridge, so this goes via
+    a one-time temp-PDB roundtrip. Critically, the topology is first reduced
+    to exactly `protein_indices` via selection.reindexed_topology_subset
+    (NOT mdtraj's own Topology.subset()/Trajectory.atom_slice(), which
+    silently re-sort atom indices -- verified empirically to break the
+    "local index == position in protein_indices" convention every other
+    field in this module relies on, whenever protein_indices isn't already
+    sorted). This keeps the resulting Universe's atom count and order
+    matching exactly what compute-time xyz_nm arrays will have.
+
+    Raises:
+        ValueError: fewer than _HELANAL_MIN_RESIDUES residues configured, or
+            none of the configured residues' CA atoms were found (inside
+            protein_indices, under resSeq numbering -- unlike the other
+            _resolve_region_* helpers, there's no 0-based-index fallback here,
+            since resSeq is what actually gets written into the placeholder
+            PDB's residue-number column).
+    """
+    if len(spec.residues) < _HELANAL_MIN_RESIDUES:
+        raise ValueError(
+            f"TMEM63ResidueConfig '{label}': region '{field_name}' has only "
+            f"{len(spec.residues)} residues; HELANAL's local_bends needs at "
+            f"least {_HELANAL_MIN_RESIDUES} (n_residues - 6 > 0) to report "
+            f"anything."
+        )
+
+    local_topology = reindexed_topology_subset(topology, protein_indices.tolist())
+    placeholder_xyz = np.zeros((1, local_topology.n_atoms, 3), dtype=np.float32)
+    placeholder_traj = md.Trajectory(placeholder_xyz, local_topology)
+
+    fd, pdb_path = tempfile.mkstemp(suffix=".pdb")
+    os.close(fd)
+    try:
+        placeholder_traj.save_pdb(pdb_path)
+        universe = mda.Universe(pdb_path, placeholder_xyz * _NM_TO_ANGSTROM, format=MemoryReader)
+    finally:
+        os.unlink(pdb_path)
+
+    resid_str = " ".join(str(int(r)) for r in spec.residues)
+    ca_atomgroup = universe.select_atoms(f"resid {resid_str} and name CA")
+    if len(ca_atomgroup) == 0:
+        raise ValueError(
+            f"TMEM63ResidueConfig '{label}': region '{field_name}' (residues="
+            f"{spec.residues}) matched no CA atoms in the topology -- check "
+            f"the residue numbers (resSeq) and that protein_indices covers "
+            f"this region."
+        )
+    if len(ca_atomgroup) != len(spec.residues):
+        _log_warn(
+            f"[tmem63_metrics] TMEM63ResidueConfig '{label}': region "
+            f"'{field_name}' expected {len(spec.residues)} CA atoms (one per "
+            f"residue) but matched {len(ca_atomgroup)} -- some requested "
+            f"residues may be missing from the topology or outside "
+            f"protein_indices."
+        )
+
+    return HelixCurvatureIndices(universe=universe, ca_atomgroup=ca_atomgroup, ref_axis=spec.ref_axis)
+
+
 def _require_field(value, *, label: str, field_name: str):
     if value is None:
         raise NotImplementedError(
@@ -305,6 +587,10 @@ def build_tmem63_token_indices(
         spec = _require_field(spec, label=label, field_name=field_name)
         return _resolve_region_atoms(topology, spec, protein_map, state, label=label, field_name=field_name)
 
+    def region_pairs(spec: Optional[RegionSpec], field_name: str) -> Tuple[np.ndarray, np.ndarray]:
+        spec = _require_field(spec, label=label, field_name=field_name)
+        return _resolve_region_inter_residue_pairs(topology, spec, protein_map, state, label=label, field_name=field_name)
+
     def hinge_sides(spec: Optional[HingeSpec], field_name: str) -> Tuple[np.ndarray, np.ndarray]:
         spec = _require_field(spec, label=label, field_name=field_name)
         n_idx = _resolve_region_atoms(
@@ -314,6 +600,10 @@ def build_tmem63_token_indices(
             topology, spec.c_side, protein_map, state, label=label, field_name=f"{field_name}.c_side"
         )
         return (n_idx, c_idx)
+
+    def curvature(spec: Optional[HelixCurvatureSpec], field_name: str) -> HelixCurvatureIndices:
+        spec = _require_field(spec, label=label, field_name=field_name)
+        return _build_helix_curvature_indices(topology, spec, protein_indices, label=label, field_name=field_name)
 
     rmsd_atom_idx = None
     if "tm_rmsd_nm" in names:
@@ -334,14 +624,20 @@ def build_tmem63_token_indices(
             region(residue_config.tm4_membrane_region, "tm4_membrane_region")
             if "tm4_membrane_angle_rad" in names else None
         ),
-        hydrophobic_latch_atom_idx=(
-            region(residue_config.hydrophobic_latch, "hydrophobic_latch")
+        hydrophobic_latch_pairs=(
+            region_pairs(residue_config.hydrophobic_latch, "hydrophobic_latch")
             if "hydrophobic_latch_dist_nm" in names else None
         ),
-        neck_atom_idx=region(residue_config.neck, "neck") if "neck_dist_nm" in names else None,
+        neck_pairs=region_pairs(residue_config.neck, "neck") if "neck_dist_nm" in names else None,
         tm6_hinge_sides=hinge_sides(residue_config.tm6_hinge, "tm6_hinge") if "tm6_hinge_angle_rad" in names else None,
-        tm3_hinge_sides=hinge_sides(residue_config.tm3_hinge, "tm3_hinge") if "tm3_hinge_angle_rad" in names else None,
-        tm5_hinge_sides=hinge_sides(residue_config.tm5_hinge, "tm5_hinge") if "tm5_hinge_angle_rad" in names else None,
+        tm3_curvature=(
+            curvature(residue_config.tm3_curvature_region, "tm3_curvature_region")
+            if "tm3_hinge_angle_rad" in names else None
+        ),
+        tm5_curvature=(
+            curvature(residue_config.tm5_curvature_region, "tm5_curvature_region")
+            if "tm5_hinge_angle_rad" in names else None
+        ),
         il2_hinge_atom_idx=(
             region(residue_config.il2_hinge_region, "il2_hinge_region")
             if "il2_tm6b_dist_nm" in names else None
@@ -426,18 +722,23 @@ def _compute_tm4_membrane_angle(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, me
     return _compute_membrane_angle(idx.tm4_membrane_atom_idx, "tm4_membrane_angle_rad", xyz_nm, membrane_axis)
 
 
-def _compute_mean_pairwise(atom_idx, name, xyz_nm) -> Optional[np.ndarray]:
-    if not _idx_present(atom_idx, name, f"{name}'s atom index"):
+def _compute_inter_residue_mean_distance(pairs, name, xyz_nm) -> Optional[np.ndarray]:
+    if pairs is None:
+        _warn_once(f"{name}:missing_index", f"'{name}' skipped: inter-residue pair indices were not built.")
         return None
-    return mean_pairwise_distance_from_xyz(xyz_nm, atom_idx)
+    idx_a, idx_b = pairs
+    if idx_a.size == 0:
+        _warn_once(f"{name}:empty_pairs", f"'{name}' skipped: resolved to zero inter-residue atom pairs.")
+        return None
+    return mean_paired_distance_from_xyz(xyz_nm, idx_a, idx_b)
 
 
 def _compute_hydrophobic_latch(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_axis):
-    return _compute_mean_pairwise(idx.hydrophobic_latch_atom_idx, "hydrophobic_latch_dist_nm", xyz_nm)
+    return _compute_inter_residue_mean_distance(idx.hydrophobic_latch_pairs, "hydrophobic_latch_dist_nm", xyz_nm)
 
 
 def _compute_neck(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_axis):
-    return _compute_mean_pairwise(idx.neck_atom_idx, "neck_dist_nm", xyz_nm)
+    return _compute_inter_residue_mean_distance(idx.neck_pairs, "neck_dist_nm", xyz_nm)
 
 
 def _compute_hinge_angle(sides, name, xyz_nm) -> Optional[np.ndarray]:
@@ -457,12 +758,50 @@ def _compute_tm6_hinge(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_ax
     return _compute_hinge_angle(idx.tm6_hinge_sides, "tm6_hinge_angle_rad", xyz_nm)
 
 
+def _compute_helix_curvature_via_helanal(
+    curvature: Optional[HelixCurvatureIndices], name: str, xyz_nm
+) -> Optional[np.ndarray]:
+    """Max local helix-bending angle (radians) over a helix region, via
+    MDAnalysis's HELANAL.
+
+    Used for tm3_hinge_angle_rad / tm5_hinge_angle_rad, where -- unlike
+    tm6_hinge_angle_rad -- no single pivot residue is known, so "hinge angle"
+    is defined as wherever the helix actually bends the most, every frame,
+    rather than the angle at one fixed, hardcoded split point.
+
+    Any exception raised here (e.g. from HELANAL itself) is left to propagate
+    to compute_tmem63_global_values_from_xyz's shared per-column try/except,
+    same as every other column -- only the "index wasn't built" / "nothing to
+    report" sentinel cases are handled here directly, matching this module's
+    convention elsewhere.
+    """
+    if curvature is None:
+        _warn_once(f"{name}:missing_index", f"'{name}' skipped: helix curvature indices were not built.")
+        return None
+
+    xyz_ang = np.asarray(xyz_nm, dtype=np.float64) * _NM_TO_ANGSTROM
+    curvature.universe.load_new(xyz_ang, format=MemoryReader)
+    result = HELANAL(curvature.ca_atomgroup, ref_axis=curvature.ref_axis).run()
+    # HELANAL reports angles in degrees; this module's convention is radians.
+    local_bends_deg = np.asarray(result.results.local_bends, dtype=np.float64)
+    if local_bends_deg.ndim != 2 or local_bends_deg.shape[1] == 0:
+        _warn_once(
+            f"{name}:no_local_bends",
+            f"'{name}' skipped: HELANAL returned no local_bends (shape "
+            f"{local_bends_deg.shape}) -- the configured residue range may be "
+            f"too short, or split into disconnected sub-helices.",
+        )
+        return None
+    max_bend_deg = local_bends_deg.max(axis=1)
+    return np.deg2rad(max_bend_deg).astype(np.float32, copy=False)
+
+
 def _compute_tm3_hinge(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_axis):
-    return _compute_hinge_angle(idx.tm3_hinge_sides, "tm3_hinge_angle_rad", xyz_nm)
+    return _compute_helix_curvature_via_helanal(idx.tm3_curvature, "tm3_hinge_angle_rad", xyz_nm)
 
 
 def _compute_tm5_hinge(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_axis):
-    return _compute_hinge_angle(idx.tm5_hinge_sides, "tm5_hinge_angle_rad", xyz_nm)
+    return _compute_helix_curvature_via_helanal(idx.tm5_curvature, "tm5_hinge_angle_rad", xyz_nm)
 
 
 def _compute_il2_tm6b_distance(xyz_nm, idx: TMEM63TokenIndices, ref_rmsd_nm, membrane_axis):

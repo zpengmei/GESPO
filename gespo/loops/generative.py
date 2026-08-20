@@ -151,8 +151,8 @@ from gespo.config import TrainingConfig
 from gespo.sampling import PeptideSampler
 from gespo.utils.adk_metrics import ADK_GLOBAL_TOKEN_NAMES, build_adk_token_indices, compute_adk_global_values_from_frames
 from gespo.utils.tmem63_metrics import (
+    ACTIVE_TMEM63_RESIDUE_CONFIG,
     TMEM63_GLOBAL_TOKEN_NAMES,
-    TMEM63B_RESIDUE_CONFIG,
     build_tmem63_token_indices,
 )
 from gespo.utils.ppi_metrics import PPI_GLOBAL_TOKEN_NAMES, PPITokenIndices, build_ppi_token_indices, compute_ppi_globals_from_frames, set_native_contacts
@@ -660,12 +660,12 @@ def train(args: argparse.Namespace) -> None:
                 adk_token_idx = None
         if global_dim == len(TMEM63_GLOBAL_TOKEN_NAMES) or any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
             try:
-                # TMEM63B_RESIDUE_CONFIG is the paralog currently being trained;
-                # switching to TMEM63A means swapping this for TMEM63A_RESIDUE_CONFIG
-                # once its residue numbers are filled in (see tmem63_metrics.py).
+                # ACTIVE_TMEM63_RESIDUE_CONFIG (gespo/utils/tmem63_metrics.py) is the
+                # single switch point for which TMEM63 construct GESPO trains against
+                # -- reassign it there, not here, to point at TMEM63A or a custom config.
                 tmem63_token_idx = build_tmem63_token_indices(
                     env_ref.md_topology,
-                    TMEM63B_RESIDUE_CONFIG,
+                    ACTIVE_TMEM63_RESIDUE_CONFIG,
                     token_names=[n for n in global_token_names if n in set(TMEM63_GLOBAL_TOKEN_NAMES)],
                     protein_indices=retrieval_protein_indices,
                 )

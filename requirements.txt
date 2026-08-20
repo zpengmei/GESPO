@@ -1,4 +1,5 @@
 mdtraj
+MDAnalysis # Only required for tmem63 helix hinge global metrics
 numpy
 torch
 pyyaml

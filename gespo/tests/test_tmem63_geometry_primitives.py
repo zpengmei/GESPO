@@ -6,6 +6,8 @@ from gespo.utils.geometry import (
     axis_from_xyz_pca,
     calc_angle,
     centroid_from_xyz,
+    inter_group_atom_pairs,
+    mean_paired_distance_from_xyz,
     mean_pairwise_distance_from_xyz,
     pairwise_distance_from_xyz,
 )
@@ -60,6 +62,51 @@ def test_mean_pairwise_distance_empty_group_returns_zero():
     xyz = np.zeros((2, 3, 3), dtype=np.float64)
     out = mean_pairwise_distance_from_xyz(xyz, np.array([], dtype=np.int64), np.array([0]))
     np.testing.assert_array_equal(out, np.zeros((2,), dtype=np.float32))
+
+
+def test_inter_group_atom_pairs_excludes_within_group_pairs():
+    # Two residues of 2 atoms each: group 0 = {0,1}, group 1 = {2,3}.
+    # Only cross-group pairs should appear: (0,2),(0,3),(1,2),(1,3).
+    idx_a, idx_b = inter_group_atom_pairs([np.array([0, 1]), np.array([2, 3])])
+    pairs = set(zip(idx_a.tolist(), idx_b.tolist()))
+    assert pairs == {(0, 2), (0, 3), (1, 2), (1, 3)}
+    # No within-group pair (0,1) or (2,3) should ever appear.
+    assert (0, 1) not in pairs and (1, 0) not in pairs
+    assert (2, 3) not in pairs and (3, 2) not in pairs
+
+
+def test_inter_group_atom_pairs_drops_empty_groups_and_needs_two():
+    idx_a, idx_b = inter_group_atom_pairs([np.array([0, 1]), np.array([], dtype=np.int64)])
+    assert idx_a.size == 0 and idx_b.size == 0
+
+
+def test_mean_paired_distance_matches_manual_pairs():
+    xyz = np.zeros((1, 4, 3), dtype=np.float64)
+    xyz[0, :, 0] = [0.0, 1.0, 10.0, 12.0]  # residue A={0,1}, residue B={2,3}
+    idx_a, idx_b = inter_group_atom_pairs([np.array([0, 1]), np.array([2, 3])])
+    out = mean_paired_distance_from_xyz(xyz, idx_a, idx_b)
+    # cross pairs: |0-10|=10, |0-12|=12, |1-10|=9, |1-12|=11 -> mean 10.5
+    np.testing.assert_allclose(out, [10.5], atol=1e-5)
+
+
+def test_mean_paired_distance_excludes_intraresidue_pairs_that_would_skew_mean():
+    # Residue A is a tight cluster near x=0 (intra-residue distance ~0.1),
+    # residue B is a tight cluster near x=100. The *inter*-residue mean should
+    # be close to 100, not pulled down by the near-zero intra-residue pairs
+    # that naive self-pairing over the flattened set would include.
+    xyz = np.zeros((1, 4, 3), dtype=np.float64)
+    xyz[0, :, 0] = [0.0, 0.1, 100.0, 100.1]
+    residue_groups = [np.array([0, 1]), np.array([2, 3])]
+
+    idx_a, idx_b = inter_group_atom_pairs(residue_groups)
+    inter_only = mean_paired_distance_from_xyz(xyz, idx_a, idx_b)
+
+    flat = np.concatenate(residue_groups)
+    naive_self_pairing = mean_pairwise_distance_from_xyz(xyz, flat)
+
+    assert inter_only[0] > 99.0  # dominated by the ~100 nm inter-residue gap
+    assert naive_self_pairing[0] < inter_only[0]  # contaminated by the ~0.1 nm intra-residue pair
+
 
 
 def test_angle_between_vectors_right_angle():

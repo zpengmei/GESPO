@@ -30,8 +30,6 @@ KNOWN_GLOBAL_TOKEN_SETS = frozenset({
     "adk_domain4", "adk_domain_only", "adk_domain_no_rmsd", "adk_no_rmsd",
     "adk_domain4_rmsd_ab", "adk_domain4_rmsd_a_b",
     "adk_domain4_rmsd_ab_nm", "adk_domain4_rmsd_a_b_nm",
-    # TMEM63 CVs (skeleton; see gespo/utils/tmem63_metrics.py)
-    "tmem63", "tmem63_domain",
     # vinculin H5 bundle
     "vinculin_h5", "vinculin_h5_bundle", "h5_bundle",
     # protein-protein interface
@@ -42,6 +40,15 @@ KNOWN_GLOBAL_TOKEN_SETS = frozenset({
     # pocket tokens (holo --pdb, or apo --pdb + --pocket-ref-pdb)
     "rmsd_e2e_pocket", "rmsd_e2e_pocket3",
     "rmsd_e2e_pocket_contacts", "rmsd_e2e_pocket_full",
+    # TMEM63 CVs
+    "tmem63", # all nine TMEM63 tokens
+    "tmem63_dists", # TM RMSD, avg latch distance, avg neck distance, il2-tm6b distance
+    "tmem63_dists_only", # avg latch distance, avg neck distance, il2-tm6b distance
+    "tmem63_hel_hinges", # TM-domain RMSD, TM6 hinge, TM3 hinge, TM5 hinge
+    "tmem63_hel_hinges_only", # TM6 hinge, TM3 hinge, TM5 hinge
+    "tmem63_hel_tilts", # TM-domain RMSD, TM6 angle, TM4 angle
+    "tmem63_hel_tilts_only", # TM6 angle, TM4 angle
+
 })
 
 # The handful worth surfacing in --help (the rest are aliases/legacy spellings).

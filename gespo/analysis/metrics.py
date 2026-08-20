@@ -142,8 +142,8 @@ def compute_globals_from_coords(
     # expressed through the shared ca_local/ref_ca_nm pair above; tm_rmsd_nm
     # simply stays 0 (with a logged warning, see tmem63_metrics.py) until a
     # dedicated tmem63_ref_rmsd_nm is threaded through here to match
-    # tmem63_token_indices.rmsd_atom_idx once TMEM63B_RESIDUE_CONFIG.rmsd_regions
-    # is filled in.
+    # tmem63_token_indices.rmsd_atom_idx (ACTIVE_TMEM63_RESIDUE_CONFIG.rmsd_regions
+    # is already filled in for TMEM63B -- see gespo/utils/tmem63_metrics.py).
     tmem63_vals = None
     if tmem63_token_indices is not None and any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
         try:
