@@ -229,11 +229,8 @@ class TMEM63ResidueConfig:
 
 
 # --- TMEM63B: filled in from tmem63b_gespo.md's "Exact TMEM63B Metric
-# Residues" section. Only `neck` is still unset -- tmem63b_gespo.md notes
-# "Will find later" for those residues, so requesting neck_dist_nm still
-# raises NotImplementedError naming that field, rather than guessing.
-# Every other field below is a direct transcription of that section; if the
-# ranges there change, update here to match (and vice versa).
+# Residues" section. Every field is a direct transcription of that section;
+# if the ranges there change, update here to match (and vice versa).
 TMEM63B_RESIDUE_CONFIG = TMEM63ResidueConfig(
     label="TMEM63B",
     # TM0-TM10 helix boundaries, union used for tm_rmsd_nm. Backbone-only:
