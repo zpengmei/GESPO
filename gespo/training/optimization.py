@@ -124,7 +124,21 @@ class GRPOOptimizer:
                     global_values=global_values,
                 )
                 ratio_s = torch.exp(log_pi_s_sum - old_log_pi_s_sum)
-                kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean().clamp_min(0.0)
+                # Normalize the KL penalty per token. `log_prob` returns a sequence
+                # total, whereas `mean_token_entropy` below is per token, so without
+                # this the KL scales with sequence length while the entropy bonus does
+                # not, and kl_coef/ent_coef are not comparable across systems.
+                # NOTE: ratio_s is deliberately left sequence-level; normalizing it
+                # would change the policy-gradient estimator itself.
+                if angle_mask is not None:
+                    n_tok = angle_mask.sum(dim=(1, 2)).clamp_min(1).to(log_pi_s_sum.dtype)
+                else:
+                    n_tok = torch.full_like(
+                        log_pi_s_sum, float(torsions.shape[1] * torsions.shape[2])
+                    )
+                if global_values is not None:
+                    n_tok = n_tok + float(global_values.shape[1])
+                kl_s = ((old_log_pi_s_sum - log_pi_s_sum) / n_tok).mean().clamp_min(0.0)
                 # Approximate entropy (nats/token) for torsion AR: use a differentiable
                 # upper bound for the mixture entropy.
                 try:
