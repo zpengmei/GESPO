@@ -400,9 +400,20 @@ class TorsionARPolicy(nn.Module):
         if self.n_global_tokens > 0:
             if global_values is None:
                 global_values = torsions.new_zeros((B, self.n_global_tokens), dtype=torch.float32)
-            y = self._globals_to_y(global_values.to(dtype=torch.float32, device=torsions.device))  # [B, G]
+            gv = global_values.to(dtype=torch.float32, device=torsions.device)
+            y = self._globals_to_y(gv)  # [B, G]
             gl_logits, gl_mu, gl_sigma = self._global_params(h_full)
             lp_g = mixture_normal_log_prob(y, gl_logits, gl_mu, gl_sigma)  # [B, G]
+            # Sampling draws z on the real line and reports g = max(exp(z) - 1, 0),
+            # so g == 0 is an atom carrying the mixture mass at z <= 0. Scoring it
+            # with a density at z = 0 is the wrong quantity and makes the likelihood
+            # ratio inconsistent with the action actually taken.
+            at_zero = gv <= 0.0
+            if bool(at_zero.any()):
+                w = torch.softmax(gl_logits, dim=-1)                       # [B, G, K]
+                cdf0 = 0.5 * torch.erfc(gl_mu / (gl_sigma * math.sqrt(2.0)))  # Phi((0-mu)/sigma)
+                lp_atom = torch.log((w * cdf0).sum(dim=-1).clamp_min(1e-30))  # [B, G]
+                lp_g = torch.where(at_zero, lp_atom, lp_g)
             global_lp = lp_g.sum(dim=1)  # [B]
             return torsion_lp + global_lp
 

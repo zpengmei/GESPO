@@ -4,6 +4,24 @@ import torch.nn as nn
 from typing import List, Dict, Any, Tuple, Optional
 from ..config import TrainingConfig
 
+
+def _k3_kl(log_pi_new: torch.Tensor, log_pi_old: torch.Tensor,
+           max_log_ratio: float = 10.0) -> torch.Tensor:
+    """Schulman k3 estimator of KL(pi_old || pi_new) from samples drawn under pi_old.
+
+    Returns mean_i (rho_i - log rho_i - 1) with rho_i = pi_new(y_i) / pi_old(y_i).
+    Since rho - log rho - 1 >= 0 for every rho > 0, the estimate is nonnegative
+    sample by sample, so no clamping of the mean is needed. It is unbiased for the
+    same divergence as the plain mean of (log_pi_old - log_pi_new) it replaces,
+    because E_{pi_old}[rho] = 1, and it has lower variance.
+
+    The clamp on the log ratio is numerical protection for the exponential only;
+    with clip_eps ~ 0.1 the ratios sit near 1 and it never binds.
+    """
+    log_ratio = (log_pi_new - log_pi_old).clamp(-max_log_ratio, max_log_ratio)
+    return (log_ratio.exp() - log_ratio - 1.0).mean()
+
+
 class GRPOOptimizer:
     """
     Handles the GRPO/PPO update loop.
@@ -124,7 +142,7 @@ class GRPOOptimizer:
                     global_values=global_values,
                 )
                 ratio_s = torch.exp(log_pi_s_sum - old_log_pi_s_sum)
-                kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean().clamp_min(0.0)
+                kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
                 # Approximate entropy (nats/token) for torsion AR: use a differentiable
                 # upper bound for the mixture entropy.
                 try:
@@ -156,7 +174,7 @@ class GRPOOptimizer:
                         kl_vals = kl_divergence(old_dist_s, dist_s)
                         kl_s = kl_vals.mean()
                     except Exception:
-                        kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean()
+                        kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
                     ent_s_mean = entropy_s.mean()
                 else:
                     dist_s = self.agent.start_distribution(self.config.grp_size)
@@ -189,7 +207,7 @@ class GRPOOptimizer:
                     try:
                         kl_s = torch.distributions.kl.kl_divergence(old_dist_s, dist_s).sum(dim=-1).mean()
                     except NotImplementedError:
-                        kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean().clamp_min(0.0)
+                        kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
                         
                     ent_s_mean = entropy_s.sum(dim=-1).mean()
 
