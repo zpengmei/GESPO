@@ -38,6 +38,7 @@ def compute_globals_from_coords(
     ref_ca_b_nm: Optional[np.ndarray] = None,
     adk_token_indices: Optional[Any] = None,
     tmem63_token_indices: Optional[Any] = None,
+    tmem63_ref_rmsd_nm: Optional[np.ndarray] = None,
     ppi_token_indices: Optional[PPITokenIndices] = None,
     pocket_ca_local: Optional[np.ndarray] = None,
     pocket_ref_ca_nm: Optional[np.ndarray] = None,
@@ -67,6 +68,8 @@ def compute_globals_from_coords(
         ADK token index object from ``build_adk_token_indices``.
     tmem63_token_indices : Any or None
         TMEM63 token index object from ``build_tmem63_token_indices``.
+    tmem63_ref_rmsd_nm : ndarray or None
+        Reference coordinates in the order of the TMEM63 RMSD atom indices.
     ppi_token_indices : PPITokenIndices or None
         PPI token index object from ``build_ppi_token_indices``.
     """
@@ -136,20 +139,14 @@ def compute_globals_from_coords(
         except Exception:
             adk_vals = None
 
-    # TMEM63 metrics (RMSD / membrane angles / latch & neck distances / hinge
-    # angles / IL2-TM6b distance). Unlike ADK, TMEM63's RMSD atom selection is
-    # config-defined per region (not necessarily CA-only), so it isn't
-    # expressed through the shared ca_local/ref_ca_nm pair above; tm_rmsd_nm
-    # simply stays 0 (with a logged warning, see tmem63_metrics.py) until a
-    # dedicated tmem63_ref_rmsd_nm is threaded through here to match
-    # tmem63_token_indices.rmsd_atom_idx (ACTIVE_TMEM63_RESIDUE_CONFIG.rmsd_regions
-    # is already filled in for TMEM63B -- see gespo/utils/tmem63_metrics.py).
+    # TMEM63 RMSD can select atoms beyond CA, so it uses its own aligned reference.
     tmem63_vals = None
     if tmem63_token_indices is not None and any(n in set(TMEM63_GLOBAL_TOKEN_NAMES) for n in global_token_names):
         try:
             tmem63_vals = compute_tmem63_global_values_from_frames(
                 coords_list,
                 idx=tmem63_token_indices,
+                ref_rmsd_nm=tmem63_ref_rmsd_nm,
             )
         except Exception as exc:
             log_warn(

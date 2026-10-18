@@ -637,6 +637,7 @@ def train(args: argparse.Namespace) -> None:
     retrieval_protein_indices: np.ndarray = np.zeros((0,), dtype=np.int64)
     adk_token_idx = None
     tmem63_token_idx = None
+    tmem63_ref_rmsd_nm = None
     ppi_token_idx: Optional[PPITokenIndices] = None
     try:
         protein_indices = env_ref.md_topology.select("protein")
@@ -669,6 +670,11 @@ def train(args: argparse.Namespace) -> None:
                     token_names=[n for n in global_token_names if n in set(TMEM63_GLOBAL_TOKEN_NAMES)],
                     protein_indices=retrieval_protein_indices,
                 )
+                if tmem63_token_idx.rmsd_atom_idx is not None:
+                    ref_full_nm = np.asarray(env_ref._ref_positions_nm_full, dtype=np.float64)
+                    tmem63_ref_rmsd_nm = ref_full_nm[
+                        retrieval_protein_indices[tmem63_token_idx.rmsd_atom_idx]
+                    ]
             except Exception as exc:
                 log_warn(
                     f"[generative] build_tmem63_token_indices failed, TMEM63 global "
@@ -689,6 +695,7 @@ def train(args: argparse.Namespace) -> None:
         retrieval_protein_indices = np.zeros((0,), dtype=np.int64)
         adk_token_idx = None
         tmem63_token_idx = None
+        tmem63_ref_rmsd_nm = None
         ppi_token_idx = None
 
     # Auto-detect pocket indices for pocket_rmsd / n_contacts global tokens.
@@ -759,6 +766,7 @@ def train(args: argparse.Namespace) -> None:
             ref_ca_nm=retrieval_ref_ca_nm,
             adk_token_indices=adk_token_idx,
             tmem63_token_indices=tmem63_token_idx,
+            tmem63_ref_rmsd_nm=tmem63_ref_rmsd_nm,
             ppi_token_indices=ppi_token_idx,
             pocket_ca_local=_pocket_ca_local,
             pocket_ref_ca_nm=_pocket_ref_ca_nm,

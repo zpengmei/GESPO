@@ -500,7 +500,10 @@ def _build_helix_curvature_indices(
     os.close(fd)
     try:
         placeholder_traj.save_pdb(pdb_path)
-        universe = mda.Universe(pdb_path, placeholder_xyz * _NM_TO_ANGSTROM, format=MemoryReader)
+        universe = mda.Universe(
+            pdb_path, placeholder_xyz * _NM_TO_ANGSTROM,
+            topology_format="PDB", format=MemoryReader,
+        )
     finally:
         os.unlink(pdb_path)
 

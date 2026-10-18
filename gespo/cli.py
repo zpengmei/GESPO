@@ -184,9 +184,9 @@ def _load_config_from_args(args: argparse.Namespace) -> argparse.Namespace:
     """Resolve args into a fully-defaulted Namespace.
 
     If --config is set, load the YAML and merge with CLI overrides.
-    Otherwise, resolve straight from the CLI args. 
-    
-    Every field ends up either explicitly set or filled from its 
+    Otherwise, resolve straight from the CLI args.
+
+    Every field ends up either explicitly set or filled from its
     TrainingConfig dataclass default.
     """
     config_path = str(getattr(args, "config", "") or "").strip()
@@ -244,8 +244,8 @@ def _cmd_train(args: argparse.Namespace) -> None:
     from .utils.config import RunConfigurer
 
     _apply_mode_solvent_shortcuts(args)
-    args = _load_config_from_args(args) # TODO: Make sure that defaulting is functioning properly and priorities are in line
-    #_resolve_device(args) # TODO: Is this necessary?
+    args = _load_config_from_args(args)
+    _resolve_device(args)
     _preflight_geom2vec_checkpoint(args)
 
     log_file = os.path.join(args.snapshot_dir, "gespo.log") if getattr(args, "snapshot_dir", "") else "gespo.log"

@@ -136,6 +136,24 @@ def test_active_tmem63_residue_config_defaults_to_tmem63b():
     assert ACTIVE_TMEM63_RESIDUE_CONFIG is TMEM63B_RESIDUE_CONFIG
 
 
+def test_online_tmem63_rmsd_uses_the_supplied_reference():
+    from gespo.analysis.metrics import compute_globals_from_coords
+    from gespo.utils.tmem63_metrics import TMEM63TokenIndices
+
+    reference = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    displaced = reference.copy()
+    displaced[0, 0] += 0.5
+    values = compute_globals_from_coords(
+        [reference, displaced], global_dim=1, global_token_names=['tm_rmsd_nm'],
+        ca_local=np.array([], dtype=int), ref_ca_nm=np.zeros((0, 3)),
+        tmem63_token_indices=TMEM63TokenIndices(rmsd_atom_idx=np.arange(4)),
+        tmem63_ref_rmsd_nm=reference,
+    )
+    assert values.shape == (2, 1)
+    assert values[0, 0] < 1e-6
+    assert values[1, 0] > 0.1
+
+
 def test_build_tmem63_ref_rmsd_nm_uses_active_config_by_default_but_is_overridable():
     from gespo.utils.tmem63_metrics import ACTIVE_TMEM63_RESIDUE_CONFIG, TMEM63A_RESIDUE_CONFIG
 
