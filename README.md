@@ -8,6 +8,45 @@ proposals, and reinforcement learning increases the probability of proposals
 whose trajectories improve a learned kinetic model. The resulting loop directs
 simulation toward metastable states and the dynamics connecting them.
 
+## GESPO and Gen-COMPAS
+
+Both GESPO and [Gen-COMPAS (Tang et al., 2025)](https://arxiv.org/abs/2510.24979)
+couple a molecular generator to unbiased MD. Gen-COMPAS focuses sampling near
+the transition region between specified reactant and product states. GESPO
+trains its generator on trajectory-level kinetic rewards to discover informative
+launches across the conformational landscape, without requiring predefined end
+states in its generative exploration mode.
+
+![GESPO and Gen-COMPAS coverage over cumulative unbiased MD, with sampling footprints and new-bin discovery for Trp-cage and trypsin–benzamidine.](docs/figures/gespo-gen-compas-coverage.png)
+
+*Coverage comparison from the thesis defense, slide 26. Panels a–c: Trp-cage;
+panels d–f: trypsin–benzamidine. Coverage counts occupied bins on a fixed 60 × 60
+grid of collective variables. Blue: GESPO; pink: Gen-COMPAS; gray in the
+footprints: regions visited by both.*
+
+In these campaigns, Gen-COMPAS gains coverage quickly in its initial rounds,
+then adds relatively few new bins. GESPO overtakes it at approximately 26 ns
+for Trp-cage and 24 ns for trypsin, and continues discovering new regions.
+At the equal production budgets shown in the figure:
+
+| System | Unbiased MD per method | GESPO occupied bins | Gen-COMPAS occupied bins | Coverage ratio |
+| --- | --- | --- | --- | --- |
+| Trp-cage | 115 ns | ≈1,380 | ≈550 | ≈2.5× |
+| Trypsin–benzamidine | 600 ns | ≈2,800 | ≈900 | ≈3× |
+
+Counts and ratios are rounded from the figure. They measure coverage in these
+projections, rather than equilibrium convergence, kinetic accuracy, or a
+wall-clock speedup. The 600 ns trypsin comparison is a separate budget from the
+720 ns full campaign summarized below.
+
+The methods differ in how simulation outcomes determine the next launches:
+
+| Aspect | Gen-COMPAS | GESPO generative exploration |
+| --- | --- | --- |
+| Launch criterion | Generate intermediates and select those near the learned committor separatrix, q⁺ ≈ 0.5. | Sample from a generative launch policy trained on trajectory-level rewards. |
+| Generator update | Refit the diffusion model to accumulated configurations; refit the committor each round. | Pretrain on configurations, then optimize the policy with GRPO using kinetic rewards. |
+| Endpoint information | Specified reactant and product states define the committor. | No predefined reactant/product pair is required. |
+
 The central idea is **post-training a molecular generator on trajectory
 outcomes**. Maximum-likelihood pretraining teaches the model to describe an
 initial conformational ensemble; group-relative policy optimization (GRPO)
