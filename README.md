@@ -15,7 +15,7 @@ whose trajectories improve a learned kinetic model. The resulting loop directs
 simulation toward metastable states and the dynamics connecting them.
 
 **Read:** [Thesis (Chapter 7)](https://knowledge.uchicago.edu/records/jb5hq-9b189)
-· [Defense slides (PowerPoint)](docs/slides/thesis_defense_powerpoint_final.pptx)
+· [Defense slides (PDF)](docs/slides/thesis-defense.pdf)
 
 ## GESPO and Gen-COMPAS
 
@@ -51,7 +51,7 @@ states in its generative exploration mode.
 
 ![GESPO and Gen-COMPAS coverage over cumulative unbiased MD, with sampling footprints and new-bin discovery for Trp-cage and trypsin–benzamidine.](docs/figures/gespo-gen-compas-coverage.png)
 
-*Coverage comparison from the [defense slides](docs/slides/thesis_defense_powerpoint_final.pptx), slide 26. Panels a–c: Trp-cage;
+*Coverage comparison from the [defense slides](docs/slides/thesis-defense.pdf), slide 26. Panels a–c: Trp-cage;
 panels d–f: trypsin–benzamidine. Coverage counts occupied bins on a fixed 60 × 60
 grid of collective variables. Blue: GESPO; pink: Gen-COMPAS; gray in the
 footprints: regions visited by both.*
