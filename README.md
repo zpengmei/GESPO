@@ -35,6 +35,12 @@ states in its generative exploration mode.
 > sampling or applying a justified, validated correction. This comparison
 > therefore uses **conformational-space coverage as its sole performance metric**;
 > it does not assess equilibrium populations or free-energy accuracy.
+> The [Gen-COMPAS paper](https://arxiv.org/html/2510.24979v1#S3) separately reports
+> reweighted free-energy landscapes; its
+> [current implementation](https://github.com/Tangcyu/Gen-COMPAS#overview) uses
+> RiteWeight followed by weighted free-energy projection. These estimates are
+> distinct from the raw coverage comparison shown here and require their own
+> convergence and uncertainty assessment.
 > See [adaptive reseeding and estimation bias](https://pmc.ncbi.nlm.nih.gov/articles/PMC7047717/).
 
 ![GESPO and Gen-COMPAS coverage over cumulative unbiased MD, with sampling footprints and new-bin discovery for Trp-cage and trypsin–benzamidine.](docs/figures/gespo-gen-compas-coverage.png)
