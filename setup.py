@@ -11,6 +11,8 @@ setup(
     long_description=README,
     long_description_content_type="text/markdown",
     author="GESPO Contributors",
+    license="Apache-2.0",
+    license_files=["LICENSE", "NOTICE"],
     packages=find_packages(exclude=("examples", "configs", "tests", "docs")),
     python_requires=">=3.10",
     install_requires=[

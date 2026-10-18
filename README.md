@@ -74,6 +74,45 @@ chosen force field, with the launch restraints removed and no neural-network
 evaluation in the force loop. This repository implements the MD stage with
 OpenMM.
 
+## Generative structure and ensemble models
+
+The thesis also compares GESPO's trypsin–benzamidine coverage with structures
+from [Boltz-2](https://github.com/jwohlwend/boltz),
+[OpenFold3](https://github.com/aqlaboratory/openfold-3),
+[BioEmu](https://github.com/microsoft/bioemu), and
+[AnewSampling](https://doi.org/10.64898/2026.03.10.710952).
+These generators provide structural priors; GESPO collects trajectories and
+uses their kinetic information to improve future launch proposals.
+
+![GESPO coverage with Boltz-2, full- and shallow-MSA OpenFold3, BioEmu, and AnewSampling structures overlaid on receptor-loop and ligand-distance coordinates.](docs/figures/generative-model-comparison.png)
+
+*Original comparison from thesis Chapter 7 and defense slide 30. Gray contours
+show GESPO sampling coverage, not equilibrium free energy; colored points show
+generated structures. Panel a uses the holo receptor-loop plane; b uses apo
+coverage with ligand-free BioEmu samples; c–d couple ligand distance to loop
+RMSD. [Full-resolution figure](docs/figures/generative-model-comparison.png).*
+
+| Model and reported setting | Structures | Observation in this comparison |
+| --- | --- | --- |
+| Boltz-2 | 578 | Concentrates near the closed, bound pose. |
+| OpenFold3, full MSA | 300 | Concentrates near the closed, bound pose. |
+| OpenFold3, MSA depth 4 | 500 | Broader scatter, including ligand-separated structures, while leaving the S1* region unpopulated. In the reported depth sweep, that spread contracts by depth 16. |
+| BioEmu v1.1 | 494 apo + 562 pocket-steered | Samples open and closed receptor gates. Both conditions are ligand-free, including the pocket-steered condition, so they are absent from ligand-distance panels. |
+| AnewSampling | 500 | Concentrates near the closed, bound pose in this system. |
+
+For the reported Boltz-2 and AnewSampling samples and full-MSA OpenFold3 samples,
+benzamidine stays within about 4 Å of Asp189. The alternative S1* binding mode and the
+encounter/dissociated configurations appear in the GESPO trajectory data.
+Independent structures alone do not determine transition ordering or rates;
+those require dynamical evidence and an appropriately validated estimator.
+
+This is a comparison of sampled structures and coverage under the reported
+settings, not an equal-cost benchmark or a claim about every model version.
+The counts and observations come from the thesis and defense materials; raw
+comparison outputs and exact model/checkpoint provenance remain to be archived
+as described in [publication status](docs/publication.md). Structural generators
+can also supply starting conformations for workflows such as GESPO.
+
 ## How it works
 
 Each training epoch consists of five steps:
@@ -281,6 +320,13 @@ The implementation is organized into `gespo/policies/` for launch models,
 `gespo/loops/` and `gespo/training/` for optimization,
 `gespo/sampling/` for OpenMM and realization, and `gespo/projections/` and
 `gespo/rewards/` for kinetic representations and scoring.
+
+## License
+
+GESPO code and original project documentation are licensed under
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution and third-party scope.
+External model weights, datasets, dependencies, and third-party material in
+the scientific figures and defense slides retain their respective terms.
 
 ## Citation
 

@@ -98,9 +98,11 @@ The patch uses zero context; apply it to an unmodified thesis source copy with
 
 ## Remaining release inputs
 
-The repository has no chosen license yet; its owner must choose the license
-before one is added. The exact historical benchmark artifacts, independent
-replicate results, and confirmed ligand protonation/parameter files are also
+GESPO code and original project documentation use Apache-2.0; see the root
+`LICENSE` and `NOTICE`. External model weights, datasets, dependencies, and
+third-party scientific content retain their respective terms.
+The exact historical benchmark artifacts, independent
+replicate results, and confirmed ligand protonation/parameter files are still
 pending. The example benzamidine SMILES encodes a neutral molecule; a physical
 charge choice must be documented from the actual simulated system, rather than
 changed silently after collecting results.
