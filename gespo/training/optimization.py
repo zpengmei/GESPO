@@ -4,6 +4,29 @@ import torch.nn as nn
 from typing import List, Dict, Any, Tuple, Optional
 from ..config import TrainingConfig
 
+
+def _k3_kl(log_pi_new: torch.Tensor, log_pi_old: torch.Tensor,
+           max_log_ratio: float = 10.0, *,
+           token_counts: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Schulman k3 estimator of KL(pi_old || pi_new) from samples drawn under pi_old.
+
+    Returns mean_i (rho_i - log rho_i - 1) with rho_i = pi_new(y_i) / pi_old(y_i).
+    Since rho - log rho - 1 >= 0 for every rho > 0, the estimate is nonnegative
+    sample by sample, so no clamping of the mean is needed. Without log-ratio
+    clipping it estimates the same divergence as mean(log_pi_old - log_pi_new),
+    because E_{pi_old}[rho] = 1.
+
+    Log-ratio clipping bounds the exponential for numerical protection. Optional
+    token counts normalize each sequence's contribution before averaging, while
+    rho itself remains the sequence-level importance ratio.
+    """
+    log_ratio = (log_pi_new - log_pi_old).clamp(-max_log_ratio, max_log_ratio)
+    contributions = log_ratio.expm1() - log_ratio
+    if token_counts is not None:
+        contributions = contributions / token_counts
+    return contributions.mean()
+
+
 class GRPOOptimizer:
     """
     Handles the GRPO/PPO update loop.
@@ -131,14 +154,17 @@ class GRPOOptimizer:
                 # NOTE: ratio_s is deliberately left sequence-level; normalizing it
                 # would change the policy-gradient estimator itself.
                 if angle_mask is not None:
-                    n_tok = angle_mask.sum(dim=(1, 2)).clamp_min(1).to(log_pi_s_sum.dtype)
+                    n_tok = angle_mask.sum(dim=(1, 2)).to(log_pi_s_sum)
                 else:
                     n_tok = torch.full_like(
                         log_pi_s_sum, float(torsions.shape[1] * torsions.shape[2])
                     )
                 if global_values is not None:
                     n_tok = n_tok + float(global_values.shape[1])
-                kl_s = ((old_log_pi_s_sum - log_pi_s_sum) / n_tok).mean().clamp_min(0.0)
+                kl_s = _k3_kl(
+                    log_pi_s_sum, old_log_pi_s_sum,
+                    token_counts=n_tok.clamp_min(1),
+                )
                 # Approximate entropy (nats/token) for torsion AR: use a differentiable
                 # upper bound for the mixture entropy.
                 try:
@@ -170,7 +196,7 @@ class GRPOOptimizer:
                         kl_vals = kl_divergence(old_dist_s, dist_s)
                         kl_s = kl_vals.mean()
                     except Exception:
-                        kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean()
+                        kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
                     ent_s_mean = entropy_s.mean()
                 else:
                     dist_s = self.agent.start_distribution(self.config.grp_size)
@@ -203,7 +229,7 @@ class GRPOOptimizer:
                     try:
                         kl_s = torch.distributions.kl.kl_divergence(old_dist_s, dist_s).sum(dim=-1).mean()
                     except NotImplementedError:
-                        kl_s = (old_log_pi_s_sum - log_pi_s_sum).mean().clamp_min(0.0)
+                        kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
                         
                     ent_s_mean = entropy_s.sum(dim=-1).mean()
 
