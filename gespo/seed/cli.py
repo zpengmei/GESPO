@@ -52,6 +52,8 @@ def build_seed_subparser(subparsers) -> None:
     m.add_argument("--bias-dir", default="",
                    help="Shared metaD bias dir (default <out>/bias; walkers share it).")
     m.add_argument("--production-ns", type=float, default=25.0)
+    m.add_argument("--equilibration-ns", type=float, default=2.0,
+                   help="Equilibration before metadynamics (ns); 0 is useful for a smoke test only.")
     m.add_argument("--save-ps", type=float, default=10.0)
     m.add_argument("--dt-fs", type=float, default=2.0)
     m.add_argument("--temperature", type=float, default=298.0)
@@ -99,6 +101,7 @@ def _metad_kwargs(args) -> dict:
         pdb=args.pdb, cv_set=args.cv_set, ligand_smiles=args.ligand_smiles,
         pocket_ref_pdb=args.pocket_ref_pdb, explicit=_explicit(args),
         platform_name=args.platform, production_ns=args.production_ns,
+        equilibration_ns=args.equilibration_ns,
         save_ps=args.save_ps, dt_fs=args.dt_fs, temperature=args.temperature,
         bias_factor=args.bias_factor, hill_height=args.hill_height, hill_freq=args.hill_freq,
         pocket_cutoff_nm=args.pocket_cutoff_nm, cv1_max_nm=args.cv1_max_nm,

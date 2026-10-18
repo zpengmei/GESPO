@@ -88,7 +88,15 @@ def run_high_temp(
         forcefield_implicit=forcefield_implicit)
 
     log("Preparing topology …")
-    top, pos0, _is_periodic = _sys.prepare_topology(pdb, ff, explicit=explicit)
+    topology_path = out / 'simulation_topology.pdb'
+    if restart and ckpt_path.exists():
+        if not topology_path.exists():
+            raise FileNotFoundError('Restart requires the saved simulation_topology.pdb beside the checkpoint.')
+        saved = app.PDBFile(str(topology_path))
+        top, pos0 = saved.topology, saved.positions
+    else:
+        top, pos0, _is_periodic = _sys.prepare_topology(pdb, ff, explicit=explicit)
+        _sys.write_simulation_topology(out, top, pos0)
     plat, props = _sys.platform_and_props(device, platform_name=platform_name)
 
     def _maybe_restraint(system):
@@ -148,6 +156,7 @@ def run_high_temp(
     log(f"Stage 4 — {T_tgt:.0f} K, 5 ns stabilisation")
     sim.step(ns_to_steps(5.0, dt))
     pos5, vel5, box5 = _sys.get_state(sim)
+    _sys.write_simulation_topology(out, top, pos5, box5 if explicit else None)
     del sim, sys_eq
 
     # ── Stage 5: production ─────────────────────────────────────────────────

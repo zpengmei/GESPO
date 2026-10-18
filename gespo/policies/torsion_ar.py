@@ -334,7 +334,12 @@ class TorsionARPolicy(nn.Module):
         global_values: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Compute log π(Θ) for a batch of torsion sequences using teacher forcing.
+        Score a batch of proposals by teacher forcing.
+
+        Positive global descriptors are scored in log1p coordinates. The raw-
+        coordinate Jacobian is independent of policy parameters and omitted, so
+        it cancels in GRPO likelihood ratios. Zero descriptors use probability
+        mass, not density. This score does not normalize range-constrained laws.
 
         Args:
             torsions:      [B, L, 3] angles (φ, ψ, ω) in radians.

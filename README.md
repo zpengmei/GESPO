@@ -48,6 +48,12 @@ projections, rather than equilibrium convergence, kinetic accuracy, or a
 wall-clock speedup. The 600 ns trypsin comparison is a separate budget from the
 720 ns full campaign summarized below.
 
+These are historical observations transcribed from the defense figure, rather
+than independently replicated benchmarks of the corrected software. Raw
+comparison data and exact campaign provenance have not yet been archived here.
+See [publication and reproducibility status](docs/publication.md) for the
+remaining evidence and the coverage-regeneration tool.
+
 The methods differ in how simulation outcomes determine the next launches:
 
 | Aspect | Gen-COMPAS | GESPO generative exploration |
@@ -76,8 +82,8 @@ Each training epoch consists of five steps:
    reduced launch descriptions: global structural descriptors followed by protein
    backbone torsions and, for protein–ligand systems, ligand torsions. Gaussian
    mixture heads describe the global variables; von Mises mixture heads describe
-   periodic angles. This gives an exact log-likelihood for each proposal, as
-   needed for policy optimization.
+   periodic angles. This gives tractable proposal likelihood ratios for policy
+   optimization.
 2. **Realize.** A nearby configuration is retrieved from the trajectory bank and
    briefly restrained toward the proposal. Releasing the restraints yields an
    all-atom starting structure. The generator can propose beyond stored frames;
@@ -280,6 +286,12 @@ The implementation is organized into `gespo/policies/` for launch models,
 
 If you use GESPO, please cite the thesis. Chapter 7 describes the method and its
 applications.
+
+The `0.2.0.dev0` implementation corrects optimizer and workflow issues found
+during publication review. It is not a bitwise reproduction of the historical
+campaigns. Keep the code SHA, resolved environment, prepared system, model
+checkpoint, and trajectory manifest with any new result; see
+[publication status](docs/publication.md).
 
 > Zihan Pengmei. *Representation and Reinforcement Learning for Molecular
 > Dynamics*. PhD dissertation, The University of Chicago (2026).

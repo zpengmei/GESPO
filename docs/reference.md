@@ -48,6 +48,19 @@ with DGA settings `--committor-dga-n-clusters`, `--committor-dga-lagtime`, etc.
 
 ## CLI help: essential vs advanced
 
+### Global range constraints
+
+`global_rmsd_range`, `global_e2e_range`, `global_rg_range`, and
+`global_token_ranges` are rejected for GRPO runs. The stand-alone policy sampler
+can restrict proposals, but its rejection/clamping law is not represented by
+`log_prob`; using its unrestricted likelihood would give incorrect policy
+gradients. Configuration validation and the training entry points enforce this
+restriction before launching MD.
+
+Both current and behavior policy networks use evaluation mode during GRPO
+likelihood scoring, so dropout does not change the importance ratios. Autograd
+remains enabled for the current policy.
+
 `gespo train --help` shows a curated **essential** flag set; `gespo train --help-all`
 shows every flag (~240). All flags are always accepted — `--help` only hides the
 advanced ones. Shortcuts: `--mode {generative,path-sampling,standard}` and

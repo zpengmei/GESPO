@@ -1,19 +1,9 @@
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 import torch
-
-# Mock optional heavy deps (mirrors existing tests)
-_openmm = MagicMock()
-sys.modules["openmm"] = _openmm
-sys.modules["openmm.app"] = MagicMock()
-_openmm_unit = MagicMock()
-_openmm_unit.Quantity = type("Quantity", (), {})
-sys.modules["openmm.unit"] = _openmm_unit
-_openmm.unit = _openmm_unit
 
 # Ensure repo root is importable as a package root (pytest may not add it).
 _REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -16,6 +16,7 @@ implementation once the RL loop can be re-verified end to end (needs OpenMM).
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -90,6 +91,16 @@ def prepare_topology(pdb_path: str, ff: app.ForceField, *, explicit: bool):
         return modeller.topology, modeller.positions, True
     log(f"  {modeller.topology.getNumAtoms()} atoms (implicit solvent, solute only)")
     return modeller.topology, modeller.positions, False
+
+
+def write_simulation_topology(out_dir, topology, positions, box=None) -> Path:
+    """Save the exact atom ordering and box used by a walker's DCD files."""
+    if box is not None:
+        topology.setPeriodicBoxVectors(box)
+    path = Path(out_dir) / 'simulation_topology.pdb'
+    with path.open('w') as handle:
+        app.PDBFile.writeFile(topology, positions, handle, keepIds=True)
+    return path
 
 
 def build_system(

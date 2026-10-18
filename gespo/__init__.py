@@ -62,9 +62,9 @@ def _resolve_version() -> str:
         try:
             return version("gespo")
         except PackageNotFoundError:
-            return "0.1.0"
+            return "0.2.0.dev0"
     except Exception:
-        return "0.1.0"
+        return "0.2.0.dev0"
 
 
 def __getattr__(name: str):

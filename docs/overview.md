@@ -1,6 +1,6 @@
 # GESPO overview
 
-GESPO (Generative Enhanced Sampling for Protein Optimization) is a reinforcement-
+GESPO (Generative Enhanced Sampling by Policy Optimization) is a reinforcement-
 learning toolkit for **enhanced sampling** of protein and protein–ligand
 conformational ensembles. A generative policy proposes starting structures; short
 unbiased MD rollouts explore from them; the policy is rewarded for expanding the

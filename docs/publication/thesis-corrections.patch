@@ -1,0 +1,35 @@
+--- a/appendices/gespo.tex
++++ b/appendices/gespo.tex
+@@ -282 +282 @@
+- & (592 segments, 230{,}400 saved frames at 0.5~ps) \\
++ & (576 segments, 230{,}400 saved frames at 0.5~ps) \\
+@@ -346,3 +346,5 @@
+-with $\alpha=10^{-3}$, and the adjoint weight $\pi$ solves $\pi^{\!\top}T=\pi^{\!\top}$.  Each row
+-of $T$ is a conditional probability, so it is unchanged by how often the launch policy visited $i$,
+-and $\pi$ inherits that invariance.  Reweighting maps the sampled measure onto $\pi$: with
++with $\alpha=10^{-3}$, and the model stationary weight $\pi$ solves
++$\pi^{\!\top}T=\pi^{\!\top}$. Each row of $T$ estimates a transition probability conditional
++on the sampled configurations within its source cell. Adaptive launches can change this
++within-cell distribution, so neither $T$ nor $\pi$ is generally invariant to the launch policy.
++The following cell-level weights map sampled cell occupancies onto the fitted model's $\pi$:
+@@ -353,2 +355,3 @@
+-any observable satisfies $\sum_t w_t\,\mathcal{O}(x_t)\propto\langle\mathcal{O}\rangle_{\pi}$, a
+-stationary rather than a sampled average.  Applying $w$ at the source frame of each pair gives the
++for observables constant within each cell, weighted averages reproduce the cell average under
++$\pi$. These weights do not correct unresolved within-cell distributions or establish atomistic
++equilibrium populations. Applying $w$ at the source frame of each pair gives the
+@@ -372,2 +375,7 @@
+-At equilibrium $\pi_iT_{ij}=\pi_jT_{ji}$, so the lower panel~b currents vanish in theor. The arrowhead is drawn where the
+-two directions between states differ significantly.
++This global asymmetry diagnostic does not bound local committor or flux errors. Since detailed
++balance is not imposed, the substitution $q^-=1-q^+$ is an approximation for this fitted chain;
++an exact backward committor would instead be computed using the time-reversed transition matrix.
++The black arrows are therefore descriptive model-based flux estimates, rather than validated
++equilibrium reactive fluxes. Under detailed balance $\pi_iT_{ij}=\pi_jT_{ji}$, the green currents
++vanish. Their displayed directions alone do not establish a physical ordering of receptor and
++ligand motion or a directed equilibrium pathway.
+--- a/chapters/content/gespo.tex
++++ b/chapters/content/gespo.tex
+@@ -346 +346 @@
+-These results establish a claim about exploration and nothing more. Across the three systems the launch policy reached states and transitions that fixed restart rules and generated ensembles did not, at budgets one to three orders of magnitude below the corresponding references. The pooled frames come from a launch distribution that changes every epoch, so they are not samples of the stationary distribution. Populations, free energies, and rates would require a reweighting step we do not perform, so we report state discovery, committor orderings, and network connectivity instead.
++These results establish a claim about exploration and nothing more. Across the three systems the launch policy reached states and transitions that fixed restart rules and generated ensembles did not, at budgets one to three orders of magnitude below the corresponding references. The pooled frames come from a launch distribution that changes every epoch, so they are not samples of the stationary distribution. The cell-level weighting used for the trypsin networks maps occupancies onto the fitted transition model; it does not establish equilibrium populations or remove unresolved within-cell sampling effects. Validated populations, free energies, and rates require estimators whose assumptions are checked independently, so we report state discovery, committor orderings, and model-derived network connectivity instead.

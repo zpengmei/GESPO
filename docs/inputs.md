@@ -75,7 +75,9 @@ standard layout is:
 
 ```
 seeds/
+  walker_1/simulation_topology.pdb
   walker_1/production.dcd
+  walker_2/simulation_topology.pdb
   walker_2/production.dcd
   ...
 ```
@@ -86,6 +88,10 @@ which is consumed directly by:
 
 `--source`/`--replay-only-dcd-dir` accept a comma-separated list of directories (or
 a single directory searched recursively for DCDs).
+
+Keep each walker's `simulation_topology.pdb` beside its DCD: seed generation
+can change the solvent atom count and ordering. High-temperature restarts also
+require this saved topology and reuse it instead of re-solvating the system.
 
 ## Between rounds: `simulation_topology.pdb`
 

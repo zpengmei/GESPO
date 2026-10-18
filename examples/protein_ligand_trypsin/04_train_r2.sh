@@ -26,20 +26,28 @@ SNAPSHOT_DIR="${WORK_DIR}/run_snaps"
 CKPT_DIR="${SNAPSHOT_DIR}/ckpts"
 mkdir -p "${CKPT_DIR}"
 
-# Replay pool = original metaD seeds + round-1 epoch trajectories.
-REPLAY_DIRS="metad_seeds/walker_1,metad_seeds/walker_2,metad_seeds/walker_3,metad_seeds/walker_4"
+# Biased seeds are retrieval-only; unbiased production also trains the kinetic model.
+SEED_DIRS="metad_seeds/walker_1,metad_seeds/walker_2,metad_seeds/walker_3,metad_seeds/walker_4"
+HISTORY_DIRS=""
 for ep_dir in "${R1_SNAPS}"/epoch_*; do
-  [ -d "${ep_dir}" ] && REPLAY_DIRS="${REPLAY_DIRS},${ep_dir}"
+  if [ -d "${ep_dir}" ]; then
+    HISTORY_DIRS="${HISTORY_DIRS:+${HISTORY_DIRS},}${ep_dir}"
+  fi
 done
+if [ -z "${HISTORY_DIRS}" ]; then
+  echo "No round-1 epoch directories found under ${R1_SNAPS}" >&2
+  exit 1
+fi
+SOURCE_DIRS="${SEED_DIRS},${HISTORY_DIRS}"
 
 # Carry the solvated topology forward so the system matches round 1 exactly.
-[ -f "${R1_SNAPS}/simulation_topology.pdb" ] && \
-  cp "${R1_SNAPS}/simulation_topology.pdb" "${SNAPSHOT_DIR}/simulation_topology.pdb"
+cp "${R1_SNAPS}/simulation_topology.pdb" "${SNAPSHOT_DIR}/simulation_topology.pdb"
+PDB="${R1_SNAPS}/simulation_topology.pdb"
 
 # ── Step A: re-pretrain the AR policy cumulatively (seeds + round-1 epochs) ──
 AR_R2="torsion_ar_holo_r1_retrain.pt"
 python -m gespo pretrain \
-  --source "${REPLAY_DIRS}" \
+  --source "${SOURCE_DIRS}" \
   --pdb "${PDB}" \
   --out "${AR_R2}" \
   --global-token-set rmsd_e2e_pocket_full \
@@ -80,7 +88,8 @@ exec python -m gespo train \
   --energy-threshold 1e12 \
   --max-resample-attempts 6 \
   --no-anchoring-round \
-  --replay-only-dcd-dir "${REPLAY_DIRS}" \
+  --replay-only-dcd-dir "${SEED_DIRS}" \
+  --history-dcd-dir "${HISTORY_DIRS}" \
   --ligand-pocket-restraint \
   --ligand-pocket-restraint-radius-nm 0.6 \
   --ligand-pocket-restraint-k 1000 \
