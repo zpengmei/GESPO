@@ -2,6 +2,12 @@
 
 **Generative Enhanced Sampling by Policy Optimization**
 
+![Figure 1: GESPO sampling and policy-optimization loop, with alanine dipeptide, Trp-cage, and trypsin–benzamidine benchmark systems.](docs/figures/gespo-overview.png)
+
+*Figure 1. The GESPO loop and benchmark systems. A generative policy proposes
+launch conformations; short unbiased trajectories supply kinetic rewards for
+group-relative policy optimization.*
+
 GESPO learns where to start molecular dynamics (MD) simulations. A generative
 model proposes initial conformations, short unbiased trajectories test those
 proposals, and reinforcement learning increases the probability of proposals
