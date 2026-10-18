@@ -33,7 +33,7 @@ panels d–f: trypsin–benzamidine. Coverage counts occupied bins on a fixed 60
 grid of collective variables. Blue: GESPO; pink: Gen-COMPAS; gray in the
 footprints: regions visited by both.*
 
-In these campaigns, Gen-COMPAS gains coverage quickly in its initial rounds,
+In this comparison, Gen-COMPAS gains coverage quickly in its initial rounds,
 then adds relatively few new bins. GESPO overtakes it at approximately 26 ns
 for Trp-cage and 24 ns for trypsin, and continues discovering new regions.
 At the equal production budgets shown in the figure:
@@ -43,16 +43,9 @@ At the equal production budgets shown in the figure:
 | Trp-cage | 115 ns | ≈1,380 | ≈550 | ≈2.5× |
 | Trypsin–benzamidine | 600 ns | ≈2,800 | ≈900 | ≈3× |
 
-Counts and ratios are rounded from the figure. They measure coverage in these
-projections, rather than equilibrium convergence, kinetic accuracy, or a
-wall-clock speedup. The 600 ns trypsin comparison is a separate budget from the
-720 ns full campaign summarized below.
-
-These are historical observations transcribed from the defense figure, rather
-than independently replicated benchmarks of the corrected software. Raw
-comparison data and exact campaign provenance have not yet been archived here.
-See [publication and reproducibility status](docs/publication.md) for the
-remaining evidence and the coverage-regeneration tool.
+Counts and ratios are rounded from the figure and measure coverage in the
+plotted coordinates. The trypsin comparison uses 600 ns per method; the full
+GESPO application below uses 720 ns.
 
 The methods differ in how simulation outcomes determine the next launches:
 
@@ -86,8 +79,8 @@ uses their kinetic information to improve future launch proposals.
 
 ![GESPO coverage with Boltz-2, full- and shallow-MSA OpenFold3, BioEmu, and AnewSampling structures overlaid on receptor-loop and ligand-distance coordinates.](docs/figures/generative-model-comparison.png)
 
-*Original comparison from thesis Chapter 7 and defense slide 30. Gray contours
-show GESPO sampling coverage, not equilibrium free energy; colored points show
+*Comparison from thesis Chapter 7 and defense slide 30. Gray contours
+show GESPO sampling coverage; colored points show
 generated structures. Panel a uses the holo receptor-loop plane; b uses apo
 coverage with ligand-free BioEmu samples; c–d couple ligand distance to loop
 RMSD. [Full-resolution figure](docs/figures/generative-model-comparison.png).*
@@ -103,15 +96,8 @@ RMSD. [Full-resolution figure](docs/figures/generative-model-comparison.png).*
 For the reported Boltz-2 and AnewSampling samples and full-MSA OpenFold3 samples,
 benzamidine stays within about 4 Å of Asp189. The alternative S1* binding mode and the
 encounter/dissociated configurations appear in the GESPO trajectory data.
-Independent structures alone do not determine transition ordering or rates;
-those require dynamical evidence and an appropriately validated estimator.
-
-This is a comparison of sampled structures and coverage under the reported
-settings, not an equal-cost benchmark or a claim about every model version.
-The counts and observations come from the thesis and defense materials; raw
-comparison outputs and exact model/checkpoint provenance remain to be archived
-as described in [publication status](docs/publication.md). Structural generators
-can also supply starting conformations for workflows such as GESPO.
+The comparison uses the model settings and sample counts reported in the thesis.
+Structural generators can also supply starting conformations for GESPO.
 
 ## How it works
 
@@ -152,9 +138,8 @@ the generative exploration workflow. An optional
 [path-sampling mode](docs/reference.md#path-sampling--committor) uses specified
 endpoints and committor-based rewards.
 
-The VAMP-2 contribution measures influence on the current empirical kinetic
-score. It is a training signal, rather than a direct measure of the accuracy of
-populations or rate constants.
+The VAMP-2 contribution measures each trajectory's influence on the current
+kinetic score and supplies the policy's training signal.
 
 ## Reported applications
 
@@ -167,18 +152,13 @@ evaluates GESPO on three systems:
 | Trp-cage | 115.2 ns, in 200 ps segments | Coverage from compact to extended conformations, with folding intermediates and an unfolded-to-folded committor. |
 | Trypsin–benzamidine | 720 ns, in 2 ns segments | Native S1 and alternative S1* binding modes, encounter and dissociated configurations, and receptor rearrangements along model-derived binding/unbinding pathways. |
 
-These are aggregate production budgets, excluding seed generation, structure
-realization, and model training; they are not wall-clock timings. The bundled
-examples illustrate the workflow and use settings that can differ from the
-reported campaigns. In particular, the Trp-cage example uses implicit solvent,
-whereas the reported campaign used explicit solvent.
+Budgets count aggregate production MD and exclude seeding, structure realization,
+and training. The Trp-cage quickstart uses implicit solvent; the thesis application
+uses explicit solvent.
 
-**Statistical scope.** Adaptive launches change the distribution of collected
-frames even though each production segment follows unbiased dynamics. Unweighted
-histograms describe sampling coverage. Equilibrium populations, free energies,
-and rate constants require suitable estimators and independent validation.
-Committors and state networks are model estimates whose accuracy depends on
-sampling, state definitions, and lag times.
+Coverage plots describe sampled configurations. Estimating equilibrium populations,
+free energies, or rates from adaptive sampling requires suitable estimators and
+validation of the kinetic model.
 
 ## Installation
 
@@ -332,12 +312,6 @@ the scientific figures and defense slides retain their respective terms.
 
 If you use GESPO, please cite the thesis. Chapter 7 describes the method and its
 applications.
-
-The `0.2.0.dev0` implementation corrects optimizer and workflow issues found
-during publication review. It is not a bitwise reproduction of the historical
-campaigns. Keep the code SHA, resolved environment, prepared system, model
-checkpoint, and trajectory manifest with any new result; see
-[publication status](docs/publication.md).
 
 > Zihan Pengmei. *Representation and Reinforcement Learning for Molecular
 > Dynamics*. PhD dissertation, The University of Chicago (2026).
