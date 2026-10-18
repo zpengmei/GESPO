@@ -1,193 +1,235 @@
-# GESPO — Generative Enhanced Sampling by Policy Optimization
+# GESPO
 
-GESPO is a **self-improving agentic system for biomolecular kinetics discovery
-from molecular dynamics**. It post-trains a pretrained generative *launch policy*
-with policy optimization (GRPO) to decide **where new MD trajectories should
-start**, so that short unbiased simulations expose the slow processes — metastable
-states, transition pathways, committors — that static structure/ensemble
-generators miss. Crucially, GESPO changes only the launch distribution; it never
-alters the physical dynamics used for production.
+**Generative Enhanced Sampling by Policy Optimization**
 
-> Method paper: *Recursive agentic post-training for biomolecular kinetics
-> discovery from molecular dynamics* — Pengmei, Nguyen, Shen, Shu, Weare & Dinner.
-> See [Citation](#citation).
+GESPO learns where to start molecular dynamics (MD) simulations. A generative
+model proposes initial conformations, short unbiased trajectories test those
+proposals, and reinforcement learning increases the probability of proposals
+whose trajectories improve a learned kinetic model. The resulting loop directs
+simulation toward metastable states and the dynamics connecting them.
 
-## What GESPO does
+The central idea is **post-training a molecular generator on trajectory
+outcomes**. Maximum-likelihood pretraining teaches the model to describe an
+initial conformational ensemble; group-relative policy optimization (GRPO)
+then teaches it which proposals lead to informative simulations. As trajectories
+accumulate, both the generator and the kinetic model learn from the expanded
+corpus.
 
-Each round is an agentic loop that separates the **decision layer** (which MD
-experiments to run) from the **propagation layer** (unbiased physics):
+The policy acts between simulations. Production trajectories evolve under the
+chosen force field, with the launch restraints removed and no neural-network
+evaluation in the force loop. This repository implements the MD stage with
+OpenMM.
 
-1. **Sample launch descriptions** from the policy πθ — a compact, autoregressive
-   description of a starting structure: global descriptors (RMSD-like distances),
-   protein backbone torsions (φ, ψ), and, for protein–ligand systems, ligand
-   rotatable-bond torsions. Von Mises heads for torsions, Gaussian mixtures for
-   global descriptors give an exact, normalized launch density (the **TorsionAR**
-   policy).
-2. **Realize** each description into an all-atom configuration via a
-   **retrieval-augmented replay-and-steer map**: pick a nearby frame from the
-   trajectory history, briefly steer it toward the proposed torsions/descriptors,
-   then release — steering is absent during the production segment.
-3. **Propagate** N unbiased short MD segments in parallel (the environment: an
-   OpenMM engine with your force field and thermodynamic conditions).
-4. **Score** each segment by its **kinetic contribution** — its leave-one-out
-   ΔVAMP-2 gain in a learned slow-dynamical (geom2vec-VAMP) representation
-   (committor-based rewards for transition-path systems).
-5. **Update** πθ with GRPO, regularized toward the pretrained generator.
+## How it works
 
-Then GESPO **recurses**: accumulate the new trajectories, re-pretrain the policy,
-and iterate — exploiting the growing MD corpus to map the kinetic landscape with
-orders of magnitude less simulation time than direct MD.
+Each training epoch consists of five steps:
 
-## The pipeline (how the loop maps to commands)
+1. **Propose.** An autoregressive transformer, TorsionAR, samples a group of
+   reduced launch descriptions: global structural descriptors followed by protein
+   backbone torsions and, for protein–ligand systems, ligand torsions. Gaussian
+   mixture heads describe the global variables; von Mises mixture heads describe
+   periodic angles. This gives an exact log-likelihood for each proposal, as
+   needed for policy optimization.
+2. **Realize.** A nearby configuration is retrieved from the trajectory bank and
+   briefly restrained toward the proposal. Releasing the restraints yields an
+   all-atom starting structure. The generator can propose beyond stored frames;
+   realization still depends on the available bank and molecular geometry.
+3. **Simulate.** Short, unbiased MD trajectories run from the realized structures
+   in parallel.
+4. **Score.** A kinetic model built on pretrained
+   [Geom2Vec](https://github.com/zpengmei/geom2vec) features evaluates the
+   trajectories in learned slow coordinates. The principal reward is each
+   trajectory's leave-one-out contribution to the VAMP-2 score. Configurable
+   coverage and transition-information terms encourage exploration.
+5. **Update.** GRPO compares rewards within the group and updates the launch
+   policy, with KL regularization toward a reference policy.
 
+```text
+Initial trajectories → Pretrain generator → Propose → Realize → Unbiased MD
+                                               ↑                  │
+                                               └── GRPO ← Reward ─┘
+
+Between rounds: expand the trajectory bank, refit the generator, and repeat.
 ```
-  gespo seed  ──▶  gespo pretrain  ──▶  gespo train  ──▶  iterate rounds
-  initial MD        the launch policy   the agentic loop above
-  (the corpus)      (max-likelihood     (realize → propagate →
-                     prior)              ΔVAMP-2 reward → GRPO)
-```
 
-New here? Read [`docs/overview.md`](docs/overview.md), then run a recipe in
-[`examples/`](examples/). Full docs: [`docs/`](docs/).
+Geom2Vec supplies the representation for the kinetic reward model; the launch
+policy generates torsions and global descriptors. The method therefore uses
+structural descriptors without requiring a predefined reaction coordinate for
+the generative exploration workflow. An optional
+[path-sampling mode](docs/reference.md#path-sampling--committor) uses specified
+endpoints and committor-based rewards.
+
+The VAMP-2 contribution measures influence on the current empirical kinetic
+score. It is a training signal, rather than a direct measure of the accuracy of
+populations or rate constants.
+
+## Reported applications
+
+The manuscript and dissertation evaluate GESPO on three systems:
+
+| System | Aggregate production MD | Findings |
+| --- | --- | --- |
+| Alanine dipeptide | 0.8 ns, in 2 ps segments | Canonical torsional basins and model-derived committors with qualitative correspondence to a matched reference. |
+| Trp-cage | 115.2 ns, in 200 ps segments | Coverage from compact to extended conformations, with folding intermediates and an unfolded-to-folded committor. |
+| Trypsin–benzamidine | 720 ns, in 2 ns segments | Native S1 and alternative S1* binding modes, encounter and dissociated configurations, and receptor rearrangements along model-derived binding/unbinding pathways. |
+
+These are aggregate production budgets, excluding seed generation, structure
+realization, and model training; they are not wall-clock timings. The bundled
+examples illustrate the workflow and use settings that can differ from the
+reported campaigns. In particular, the Trp-cage example uses implicit solvent,
+whereas the reported campaign used explicit solvent.
+
+**Statistical scope.** Adaptive launches change the distribution of collected
+frames even though each production segment follows unbiased dynamics. Unweighted
+histograms describe sampling coverage. Equilibrium populations, free energies,
+and rate constants require suitable estimators and independent validation.
+Committors and state networks are model estimates whose accuracy depends on
+sampling, state definitions, and lag times.
 
 ## Installation
 
-GESPO needs Python ≥ 3.10, an **OpenMM** MD environment, and the separate
-**geom2vec** package (which also ships the pretrained backbones).
+Use Python 3.10 or newer. The commands below create an environment for the CUDA
+workflow used by the examples. Install a PyTorch build appropriate for your
+hardware and its matching PyTorch Geometric dependencies, following the
+[Geom2Vec installation instructions](https://github.com/zpengmei/geom2vec).
 
 ```bash
-# 1. An environment with OpenMM + ligand parameterization (conda-forge recommended)
-conda create -n gespo python=3.11 -y && conda activate gespo
-conda install -c conda-forge openmm openmmforcefields openff-toolkit mdtraj -y
+conda create -n gespo python=3.11 -y
+conda activate gespo
+conda install -c conda-forge openmm mdtraj -y
 
-# 2. GESPO
 git clone https://github.com/zpengmei/GESPO.git
-cd GESPO
-pip install -e .                 # core deps (numpy, torch, mdtraj, pyyaml, …)
+python -m pip install -e ./GESPO
 
-# 3. geom2vec — separate package; needs the PyTorch Geometric stack
+# Geom2Vec is a separate package, with pretrained backbone checkpoints.
 git clone https://github.com/zpengmei/geom2vec.git
-cd geom2vec && pip install -e .  # ships pretrained checkpoints/ backbones
+python -m pip install -e ./geom2vec
+
+cd GESPO
+python -m gespo --help
 ```
 
-GESPO **auto-detects a geom2vec checkpoint** from the geom2vec install (or from
-`$GEOM2VEC_CKPT`), so `--geom2vec-ckpt` is optional once geom2vec is installed;
-pass it (or `$GEOM2VEC_SRC`) to override. Full setup and how discovery works:
-[`docs/inputs.md`](docs/inputs.md). If you didn't `pip install` geom2vec, point
-GESPO at the checkout with `export GEOM2VEC_SRC=/path/to/geom2vec/src`.
-
-## Quickstart
-
-After [installation](#installation) you only need a **prepared PDB** — the geom2vec
-checkpoint is auto-detected, and `gespo seed` produces the initial corpus. Inputs
-in detail: [`docs/inputs.md`](docs/inputs.md).
+Protein–ligand runs additionally require the ligand parameterization stack:
 
 ```bash
-# 1. seed: short biased MD -> seeds/walker_*/production.dcd
-python -m gespo seed metad --pdb protein.pdb --cv-set folding \
-    --implicit-solvent --n-walkers 4 --out-dir seeds
-
-# 2. pretrain the launch policy (max-likelihood prior) on the seeds
-python -m gespo pretrain --pdb protein.pdb --source seeds/walker_1,seeds/walker_2,seeds/walker_3,seeds/walker_4 \
-    --out torsion_ar.pt --global-token-set rmsd_e2e_rg
-
-# 3. train: the GRPO post-training loop  (geom2vec ckpt auto-detected; --geom2vec-ckpt to override)
-python -m gespo train --pdb protein.pdb --generative-loop --implicit-solvent \
-    --torsion-ar-checkpoint torsion_ar.pt --projection geom2vec_vamp \
-    --replay-only-dcd-dir seeds/walker_1,seeds/walker_2,seeds/walker_3,seeds/walker_4 \
-    --snapshot-dir runs/round1
+conda install -c conda-forge openmmforcefields openff-toolkit -y
 ```
 
-Worked, copy-pasteable recipes for the paper's system classes — peptide folding
-and a protein–ligand pocket:
-[`examples/protein_folding_trpcage/`](examples/protein_folding_trpcage/) and
-[`examples/protein_ligand_trypsin/`](examples/protein_ligand_trypsin/).
+For a `geom2vec_vamp` run, GESPO searches for a pretrained backbone checkpoint in
+the Geom2Vec installation and known checkout locations. Pin a checkpoint for
+reproducibility:
 
-### Config files
+```bash
+export GEOM2VEC_CKPT=/absolute/path/to/geom2vec/checkpoints/tensornet_l3_h64_rbf32_r5.pth
+```
 
-Any run can be driven by a YAML `--config` instead of long flag lists (CLI flags
-override YAML). Generate a starting template, or use an example:
+You can also pass `--geom2vec-ckpt` to a training command. See
+[inputs and checkpoint discovery](docs/inputs.md) for details.
+
+## Quickstart: a small protein in implicit solvent
+
+Start with a prepared, hydrogen-added, protein-only PDB, such as folded
+Trp-cage. Supply your own structure and the Geom2Vec checkpoint above; neither
+is bundled in GESPO. Run these commands from the repository root in the activated
+environment. This is an introductory workflow, with system-dependent sampling
+and training settings.
+
+```bash
+export PDB=/absolute/path/to/trpcage.pdb
+
+# 1. Generate an initial corpus with well-tempered metadynamics.
+python -m gespo seed metad \
+  --pdb "$PDB" --cv-set folding --implicit-solvent \
+  --n-walkers 1 --device cuda:0 --production-ns 1 --out-dir seeds
+
+# 2. Fit the generative launch policy to the seed conformations.
+python -m gespo pretrain \
+  --pdb "$PDB" --source seeds/walker_1 --out torsion_ar.pt \
+  --global-token-set rmsd_e2e_rg --device cuda:0
+
+# 3. Post-train the policy using short unbiased trajectories.
+python -m gespo train \
+  --pdb "$PDB" --generative-loop --implicit-solvent \
+  --platform CUDA --gen-device cuda:0 \
+  --torsion-ar-checkpoint torsion_ar.pt --projection geom2vec_vamp \
+  --replay-only-dcd-dir seeds/walker_1 \
+  --episodes 10 --grp-size 4 --n-md-steps 100000 \
+  --snapshot-dir runs/round1
+```
+
+The biased seeds pretrain the policy and populate the retrieval bank. Importing
+them with `--replay-only-dcd-dir` excludes them from VAMP fitting and the
+leave-one-out kinetic reward. Keep biased seeding and realization segments
+separate from unbiased production data in subsequent analysis.
+
+For longer recipes, see
+[Trp-cage folding](examples/protein_folding_trpcage/) and
+[trypsin–benzamidine](examples/protein_ligand_trypsin/).
+
+### Configuration and outputs
+
+Generate a YAML template, fill in your inputs and run settings, then validate it:
 
 ```bash
 python -m gespo config template --mode generative > my_run.yaml
+# Edit my_run.yaml before validating or running it.
+python -m gespo config validate my_run.yaml --strict
 python -m gespo train --config my_run.yaml
-python -m gespo config validate my_run.yaml --strict   # check for typos
 ```
 
-`gespo train --help` shows the essential flags; `--help-all` shows all of them.
+Explicit CLI flags override YAML values. Use `python -m gespo train --help` for
+the essential flags or `--help-all` for the full set.
 
-## Programmatic use
+The snapshot directory contains `effective_config.yaml`,
+`simulation_topology.pdb`, per-epoch trajectory and reward records, and the
+Geom2Vec/VAMP model outputs. Checkpoint locations are configurable. For another
+round, refit the policy on accumulated data, expand the retrieval bank, and carry
+forward the simulation topology so atom ordering remains consistent. Follow the
+[multi-round workflow](docs/workflow.md#iterating-the-multi-round-protocol) for
+the complete procedure.
+
+## Python API
+
+The same stages are available from Python:
 
 ```python
 import gespo
 
-# Generate the corpus, pretrain the policy, then post-train
-gespo.generate_seeds(method="metad", pdb="protein.pdb", out_dir="seeds",
-                     cv_set="folding", n_walkers=4)
-gespo.pretrain_torsion_ar(source_path="seeds/", out_path="torsion_ar.pt",
-                          pdb_path="protein.pdb", global_token_set="rmsd_e2e_rg")
-gespo.train("my_run.yaml")   # a YAML path, a dict, or a TrainingConfig
-
-cfg = gespo.load_config("my_run.yaml")
-cfg.episodes = 10
-gespo.train(cfg)
+gespo.generate_seeds(
+    method="metad", pdb="trpcage.pdb", out_dir="seeds",
+    cv_set="folding", n_walkers=1, explicit=False, production_ns=1,
+)
+gespo.pretrain_torsion_ar(
+    source_path="seeds/walker_1", out_path="torsion_ar.pt",
+    pdb_path="trpcage.pdb", global_token_set="rmsd_e2e_rg",
+)
+gespo.train("my_run.yaml")
 ```
 
-`import gespo` is cheap — OpenMM/torch load only when you call one of these.
-
-## Layout
-
-```
-gespo/
-├── __init__.py             # Curated public API (lazy): train, pretrain_torsion_ar,
-│                           #   generate_seeds, TrainingConfig, load/save_config, generate_template
-├── __main__.py             # `python -m gespo` → cli.main
-├── api.py                  # Programmatic entry points (train, pretrain_torsion_ar)
-├── cli.py                  # CLI entry point (seed / pretrain / train / config / bootstrap)
-├── seed/                   # Seed generation: `gespo seed {metad,high-temp,rmsd-bias}`
-│   ├── system.py, restraints.py, cvs.py   #   shared OpenMM system-building core + CV registry
-│   ├── methods/            #   metad / high_temp / rmsd_bias
-│   └── walkers.py, cli.py  #   multi-walker fan-out + subparser
-├── bootstrap_cli.py        # RMSD-biased bootstrap MD (also `gespo seed rmsd-bias`)
-├── config/                 # Configuration package (dataclasses + argparse + YAML)
-│   ├── training.py         #   TrainingConfig (root) + sub-configs below
-│   ├── md.py, io.py, geom2vec.py, committor.py, steering.py,
-│   │   path_sampling.py, msm_ig.py, vamp_bin.py
-│   ├── cli_gen.py          #   Auto-generate argparse flags from dataclass fields
-│   └── loader.py           #   YAML load/save + templates
-├── training/               # RL agent, GRPO optimizer, sampler, checkpointing,
-│   │                       #   TorsionAR launch-policy pretraining (+ token_sets.py), components/
-│   └── components/         #   RetrievalManager, Geom2VecManager, CommittorState, anchoring, …
-├── loops/                  # Post-training loops
-│   ├── base.py             #   BaseTrainingLoop (template-method epoch structure)
-│   ├── generative.py       #   TorsionAR generative loop
-│   ├── generative_path.py  #   Path-sampling loop (committor rewards)
-│   ├── _helpers.py         #   Shared loop helpers
-│   └── _legacy/            #   discrete-start + toy phi/psi loops
-├── policies/               # GRPOAgent, StateLogitPolicy, VonMisesStartPolicy, TorsionARPolicy
-├── rewards/                # RewardCombiner + LOO-ΔVAMP-2 / VAMP-bin / MSM-IG / committor / frontier
-├── projections/            # VAMP projectors + geom2vec/ embedding backbone
-│   └── geom2vec/           #   geom2vec embedding cache, inference, VAMP lobe (see its README)
-├── sampling/               # OpenMM environment (env.py) + replay-and-steer map (targeted_md.py)
-├── analysis/               # Diagnostics, CV metrics, plotting
-├── models/                 # Transformer blocks + positional encodings
-├── utils/                  # Geometry, OpenMM helpers, endpoints, selection, log, constants
-└── runner_agent/           # LLM-powered experiment runner (separate `gespo-agent` CLI)
-```
+Set the pretrained policy, replay inputs, solvent, and output paths in
+`my_run.yaml` before training. `gespo.train` also accepts a dictionary or a
+`TrainingConfig` object.
 
 ## Documentation
 
-- [`docs/overview.md`](docs/overview.md) — what GESPO does; the agentic loop; loop phases
-- [`docs/inputs.md`](docs/inputs.md) — the PDB, geom2vec backbone, and seed inputs
-- [`docs/seeding.md`](docs/seeding.md) — `gespo seed` methods and CV sets
-- [`docs/workflow.md`](docs/workflow.md) — end-to-end walkthrough + recursive multi-round protocol
-- [`docs/ligands.md`](docs/ligands.md) — protein–ligand specifics
-- [`docs/reference.md`](docs/reference.md) — token sets, rewards, flags, YAML sections
-- [`gespo/projections/geom2vec/README.md`](gespo/projections/geom2vec/README.md) — the geom2vec VAMP backbone
+| Guide | Contents |
+| --- | --- |
+| [Inputs](docs/inputs.md) | Structure preparation, Geom2Vec installation, checkpoints, and topology consistency. |
+| [Seeding](docs/seeding.md) | Metadynamics, high-temperature, and RMSD-biased seed generation. |
+| [Workflow](docs/workflow.md) | End-to-end commands, outputs, and cumulative training rounds. |
+| [Protein–ligand systems](docs/ligands.md) | Ligand preparation, parameterization, and pocket descriptors. |
+| [Reference](docs/reference.md) | Token sets, reward terms, path sampling, CLI flags, and YAML fields. |
+| [Geom2Vec integration](gespo/projections/geom2vec/README.md) | Embeddings, caching, and VAMP training. |
+| [Examples](examples/) | Configurations and scripts for folding and protein–ligand sampling. |
+
+The implementation is organized into `gespo/policies/` for launch models,
+`gespo/loops/` and `gespo/training/` for optimization,
+`gespo/sampling/` for OpenMM and realization, and `gespo/projections/` and
+`gespo/rewards/` for kinetic representations and scoring.
 
 ## Citation
 
-If you use GESPO, please cite:
+If you use GESPO, please cite the manuscript:
 
 > Zihan Pengmei, Nhan D. Nguyen, Zhengyuan Shen, Yinan Shu, Jonathan Weare, and
 > Aaron R. Dinner. *Recursive agentic post-training for biomolecular kinetics
