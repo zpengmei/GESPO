@@ -26,6 +26,17 @@ trains its generator on trajectory-level kinetic rewards to discover informative
 launches across the conformational landscape, without requiring predefined end
 states in its generative exploration mode.
 
+> [!WARNING]
+> **Conformational exploration does not guarantee equilibrium sampling.** Both
+> GESPO and Gen-COMPAS select launch configurations adaptively; unbiased MD
+> propagation alone does not make the pooled frames an equilibrium ensemble.
+> Directly converting their unweighted frame counts or histograms into free
+> energies with `F = -k_B T ln P` is invalid without establishing equilibrium
+> sampling or applying a justified, validated correction. This comparison
+> therefore uses **conformational-space coverage as its sole performance metric**;
+> it does not assess equilibrium populations or free-energy accuracy.
+> See [adaptive reseeding and estimation bias](https://pmc.ncbi.nlm.nih.gov/articles/PMC7047717/).
+
 ![GESPO and Gen-COMPAS coverage over cumulative unbiased MD, with sampling footprints and new-bin discovery for Trp-cage and trypsin–benzamidine.](docs/figures/gespo-gen-compas-coverage.png)
 
 *Coverage comparison from the [defense slides](docs/slides/thesis_defense_powerpoint_final.pptx), slide 26. Panels a–c: Trp-cage;
@@ -155,10 +166,6 @@ evaluates GESPO on three systems:
 Budgets count aggregate production MD and exclude seeding, structure realization,
 and training. The Trp-cage quickstart uses implicit solvent; the thesis application
 uses explicit solvent.
-
-Coverage plots describe sampled configurations. Estimating equilibrium populations,
-free energies, or rates from adaptive sampling requires suitable estimators and
-validation of the kinetic model.
 
 ## Installation
 
