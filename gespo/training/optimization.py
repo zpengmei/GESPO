@@ -6,20 +6,25 @@ from ..config import TrainingConfig
 
 
 def _k3_kl(log_pi_new: torch.Tensor, log_pi_old: torch.Tensor,
-           max_log_ratio: float = 10.0) -> torch.Tensor:
+           max_log_ratio: float = 10.0, *,
+           token_counts: Optional[torch.Tensor] = None) -> torch.Tensor:
     """Schulman k3 estimator of KL(pi_old || pi_new) from samples drawn under pi_old.
 
     Returns mean_i (rho_i - log rho_i - 1) with rho_i = pi_new(y_i) / pi_old(y_i).
     Since rho - log rho - 1 >= 0 for every rho > 0, the estimate is nonnegative
-    sample by sample, so no clamping of the mean is needed. It is unbiased for the
-    same divergence as the plain mean of (log_pi_old - log_pi_new) it replaces,
-    because E_{pi_old}[rho] = 1, and it has lower variance.
+    sample by sample, so no clamping of the mean is needed. Without log-ratio
+    clipping it estimates the same divergence as mean(log_pi_old - log_pi_new),
+    because E_{pi_old}[rho] = 1.
 
-    The clamp on the log ratio is numerical protection for the exponential only;
-    with clip_eps ~ 0.1 the ratios sit near 1 and it never binds.
+    Log-ratio clipping bounds the exponential for numerical protection. Optional
+    token counts normalize each sequence's contribution before averaging, while
+    rho itself remains the sequence-level importance ratio.
     """
     log_ratio = (log_pi_new - log_pi_old).clamp(-max_log_ratio, max_log_ratio)
-    return (log_ratio.exp() - log_ratio - 1.0).mean()
+    contributions = log_ratio.expm1() - log_ratio
+    if token_counts is not None:
+        contributions = contributions / token_counts
+    return contributions.mean()
 
 
 class GRPOOptimizer:
@@ -142,7 +147,24 @@ class GRPOOptimizer:
                     global_values=global_values,
                 )
                 ratio_s = torch.exp(log_pi_s_sum - old_log_pi_s_sum)
-                kl_s = _k3_kl(log_pi_s_sum, old_log_pi_s_sum)
+                # Normalize the KL penalty per token. `log_prob` returns a sequence
+                # total, whereas `mean_token_entropy` below is per token, so without
+                # this the KL scales with sequence length while the entropy bonus does
+                # not, and kl_coef/ent_coef are not comparable across systems.
+                # NOTE: ratio_s is deliberately left sequence-level; normalizing it
+                # would change the policy-gradient estimator itself.
+                if angle_mask is not None:
+                    n_tok = angle_mask.sum(dim=(1, 2)).to(log_pi_s_sum)
+                else:
+                    n_tok = torch.full_like(
+                        log_pi_s_sum, float(torsions.shape[1] * torsions.shape[2])
+                    )
+                if global_values is not None:
+                    n_tok = n_tok + float(global_values.shape[1])
+                kl_s = _k3_kl(
+                    log_pi_s_sum, old_log_pi_s_sum,
+                    token_counts=n_tok.clamp_min(1),
+                )
                 # Approximate entropy (nats/token) for torsion AR: use a differentiable
                 # upper bound for the mixture entropy.
                 try:
