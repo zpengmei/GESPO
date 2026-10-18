@@ -8,6 +8,9 @@ proposals, and reinforcement learning increases the probability of proposals
 whose trajectories improve a learned kinetic model. The resulting loop directs
 simulation toward metastable states and the dynamics connecting them.
 
+**Read:** [Thesis (Chapter 7)](https://knowledge.uchicago.edu/records/jb5hq-9b189)
+· [Defense slides (PowerPoint)](docs/slides/thesis_defense_powerpoint_final.pptx)
+
 ## GESPO and Gen-COMPAS
 
 Both GESPO and [Gen-COMPAS (Tang et al., 2025)](https://arxiv.org/abs/2510.24979)
@@ -19,7 +22,7 @@ states in its generative exploration mode.
 
 ![GESPO and Gen-COMPAS coverage over cumulative unbiased MD, with sampling footprints and new-bin discovery for Trp-cage and trypsin–benzamidine.](docs/figures/gespo-gen-compas-coverage.png)
 
-*Coverage comparison from the thesis defense, slide 26. Panels a–c: Trp-cage;
+*Coverage comparison from the [defense slides](docs/slides/thesis_defense_powerpoint_final.pptx), slide 26. Panels a–c: Trp-cage;
 panels d–f: trypsin–benzamidine. Coverage counts occupied bins on a fixed 60 × 60
 grid of collective variables. Blue: GESPO; pink: Gen-COMPAS; gray in the
 footprints: regions visited by both.*
@@ -104,7 +107,8 @@ populations or rate constants.
 
 ## Reported applications
 
-The manuscript and dissertation evaluate GESPO on three systems:
+Chapter 7 of the [thesis](https://knowledge.uchicago.edu/records/jb5hq-9b189)
+evaluates GESPO on three systems:
 
 | System | Aggregate production MD | Findings |
 | --- | --- | --- |
@@ -268,8 +272,20 @@ The implementation is organized into `gespo/policies/` for launch models,
 
 ## Citation
 
-If you use GESPO, please cite the manuscript:
+If you use GESPO, please cite the thesis. Chapter 7 describes the method and its
+applications.
 
-> Zihan Pengmei, Nhan D. Nguyen, Zhengyuan Shen, Yinan Shu, Jonathan Weare, and
-> Aaron R. Dinner. *Recursive agentic post-training for biomolecular kinetics
-> discovery from molecular dynamics* (2026).
+> Zihan Pengmei. *Representation and Reinforcement Learning for Molecular
+> Dynamics*. PhD dissertation, The University of Chicago (2026).
+> [doi:10.6082/jb5hq-9b189](https://doi.org/10.6082/jb5hq-9b189).
+
+```bibtex
+@phdthesis{pengmei2026representation,
+  author = {Pengmei, Zihan},
+  title = {Representation and Reinforcement Learning for Molecular Dynamics},
+  school = {The University of Chicago},
+  year = {2026},
+  doi = {10.6082/jb5hq-9b189},
+  url = {https://knowledge.uchicago.edu/records/jb5hq-9b189}
+}
+```
