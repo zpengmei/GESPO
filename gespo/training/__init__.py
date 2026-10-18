@@ -7,6 +7,8 @@ for backward compatibility.
 
 def train(args):
     """Dispatch to the appropriate training loop (delegates to gespo.loops)."""
+    from gespo.config.validation import validate_grpo_sampling
+    validate_grpo_sampling(args)
     from gespo.loops import train as _loops_train
     _loops_train(args)
 

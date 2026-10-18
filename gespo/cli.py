@@ -245,6 +245,8 @@ def _cmd_train(args: argparse.Namespace) -> None:
 
     _apply_mode_solvent_shortcuts(args)
     args = _load_config_from_args(args)
+    from .config.validation import validate_grpo_sampling
+    validate_grpo_sampling(args)
     _resolve_device(args)
     _preflight_geom2vec_checkpoint(args)
 
@@ -317,6 +319,8 @@ def _cmd_config(args: argparse.Namespace) -> None:
         from .config.loader import load_config
         try:
             config = load_config(config_path, strict=bool(getattr(args, "strict", False)))
+            from .config.validation import validate_grpo_sampling
+            validate_grpo_sampling(config)
             print(f"Config loaded successfully from {config_path}")
             print(f"  mode: {'path-sampling' if config.path_sampling else ('generative' if config.generative_loop else 'standard')}")
             print(f"  pdb: {config.pdb}")

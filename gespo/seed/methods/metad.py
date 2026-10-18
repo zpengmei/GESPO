@@ -37,6 +37,7 @@ def run_metad(
     platform_name: str = "CUDA",
     bias_dir: Optional[str] = None,
     production_ns: float = 25.0,
+    equilibration_ns: float = 2.0,
     save_ps: float = 10.0,
     dt_fs: float = 2.0,
     temperature: float = 298.0,
@@ -56,6 +57,8 @@ def run_metad(
 ) -> str:
     """Run one metadynamics walker; returns the path to the production DCD."""
     out = Path(out_dir)
+    if equilibration_ns < 0:
+        raise ValueError('equilibration_ns must be nonnegative.')
     out.mkdir(parents=True, exist_ok=True)
     bias = Path(bias_dir) if bias_dir else (out / "bias")
     bias.mkdir(parents=True, exist_ok=True)
@@ -119,7 +122,7 @@ def run_metad(
     log("  → post-minimization positions are the RMSD reference")
 
     # ── Stage 2: equilibration (barostat + lig restraint for explicit) ──────
-    log(f"Stage 2 — {'NPT' if explicit else 'NVT'} {T_K:.0f} K, 2 ns equilibration")
+    log(f"Stage 2 — {'NPT' if explicit else 'NVT'} {T_K:.0f} K, {equilibration_ns} ns equilibration")
     sys2 = _sys.build_system(top, ff, explicit=explicit, with_barostat=explicit, T_K=T_K)
     if use_lig_restraint:
         _restr.add_lig_pocket_com_restraint(
@@ -128,7 +131,7 @@ def run_metad(
     sim2.reporters.append(app.StateDataReporter(
         str(equil_log), log_stride, step=True, time=True,
         potentialEnergy=True, temperature=True, density=explicit))
-    sim2.step(ns_to_steps(2.0, dt))
+    sim2.step(ns_to_steps(equilibration_ns, dt))
     pos2, vel2, box2 = _sys.get_state(sim2)
     del sim2, sys2
     log("  → equilibration done")
@@ -154,6 +157,7 @@ def run_metad(
         saveFrequency=bias_save, biasDir=str(bias))
 
     sim3 = _sys.make_sim(top, sys3, T_K, dt, plat, props, pos2, vel2, box2)
+    _sys.write_simulation_topology(out, top, pos2, box2 if explicit else None)
     sim3.reporters.append(app.DCDReporter(str(prod_dcd), save_stride))
     sim3.reporters.append(app.StateDataReporter(
         str(prod_log), log_stride, step=True, time=True, potentialEnergy=True,

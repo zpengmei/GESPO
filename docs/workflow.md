@@ -84,9 +84,11 @@ Each round expands the ensemble; the next round learns from it. Round *n+1*:
 
 1. **Re-pretrain** the policy *cumulatively* — `--source` = the original seeds **+**
    the previous round's epoch DCDs (`runs/run_0n/run_snaps/epoch_*`), a few epochs,
-   warm-started.
-2. **Grow the replay pool** — `--replay-only-dcd-dir` gains the previous round's
-   epoch DCDs.
+   using a fresh MLE fit (the shipped pretraining command does not warm-start).
+2. **Import unbiased history** — pass prior-round production DCD directories through
+   `--history-dcd-dir`. They enter both the retrieval bank and VAMP fitting.
+   Keep the original biased seeds under `--replay-only-dcd-dir`; that input
+   deliberately excludes trajectories from VAMP and leave-one-out rewards.
 3. **Carry the topology forward** — copy `simulation_topology.pdb` into the new
    snapshot dir so the solvated system is identical.
 4. **Train** as before, into a new `runs/run_0(n+1)/`.

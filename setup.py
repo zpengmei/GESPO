@@ -6,11 +6,13 @@ README = (ROOT / "README.md").read_text(encoding="utf-8") if (ROOT / "README.md"
 
 setup(
     name="gespo",
-    version="0.1.0",
+    version="0.2.0.dev0",
     description="Generative Enhanced Sampling by Policy Optimization",
     long_description=README,
     long_description_content_type="text/markdown",
     author="GESPO Contributors",
+    license="Apache-2.0",
+    license_files=["LICENSE", "NOTICE"],
     packages=find_packages(exclude=("examples", "configs", "tests", "docs")),
     python_requires=">=3.10",
     install_requires=[
@@ -32,6 +34,7 @@ setup(
         ],
     },
     extras_require={
+        "test": ["pytest>=8,<10", "openmm"],
         # OpenMM + ligand parameterization are best installed via conda-forge;
         # listed here for completeness (`pip install -e .[md]`).
         "md": ["openmm", "openmmforcefields", "openff-toolkit"],

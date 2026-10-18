@@ -10,7 +10,7 @@ GESPO pipeline:
 
 | Example | System | Solvent | Highlights |
 |---|---|---|---|
-| [`protein_folding_trpcage/`](protein_folding_trpcage/) | Trp-cage (20-residue miniprotein) | implicit (GBn2) | folding CVs, single-round modern reproduction |
+| [`protein_folding_trpcage/`](protein_folding_trpcage/) | Trp-cage (20-residue miniprotein) | implicit (GBn2) | folding CVs, introductory single-round workflow |
 | [`protein_ligand_trypsin/`](protein_ligand_trypsin/) | trypsin + benzamidine (holo) | explicit (TIP3P) | ligand SMILES→GAFF, pocket restraint, 2 rounds |
 | [`generative_min.yaml`](generative_min.yaml) | — | — | smallest possible `--config` file |
 | [`protein_ligand_trypsin.yaml`](protein_ligand_trypsin.yaml) | trypsin + benzamidine | explicit | the holo recipe expressed as one `--config` file |

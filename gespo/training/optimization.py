@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from typing import List, Dict, Any, Tuple, Optional
 from ..config import TrainingConfig
+from ..config.validation import validate_grpo_sampling
 
 
 def _k3_kl(log_pi_new: torch.Tensor, log_pi_old: torch.Tensor,
@@ -32,6 +33,7 @@ class GRPOOptimizer:
     Handles the GRPO/PPO update loop.
     """
     def __init__(self, config: TrainingConfig, agent: nn.Module, agent_old: nn.Module, optimizers: List):
+        validate_grpo_sampling(config)
         self.config = config
         self.agent = agent
         self.agent_old = agent_old
@@ -69,6 +71,13 @@ class GRPOOptimizer:
             policy_device = torch.device("cpu")
         s_rewards = torch.as_tensor(s_rewards, device=policy_device, dtype=torch.float32)
         s_mask = torch.as_tensor(s_mask, device=policy_device, dtype=torch.bool)
+        if not s_mask.any().item():
+            return {'skipped_update': 1.0, 'valid_count': 0.0}
+
+        # Evaluation mode disables dropout; gradients remain enabled. Both
+        # likelihoods must describe the same deterministic network computation.
+        self.agent.eval()
+        self.agent_old.eval()
 
         if mode == 'torsion_ar':
             s_feats = None

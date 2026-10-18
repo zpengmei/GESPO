@@ -88,3 +88,51 @@ def test_optimizer_combines_per_token_kl_with_sequence_policy_gradient(use_mask)
     expected_kl = ((log_ratio.expm1() - log_ratio) / counts).mean()
     assert stats['kl_s'] == pytest.approx(float(expected_kl), abs=1e-7)
     assert stats['pg_s'] == pytest.approx(float(log_ratio.exp().mean()), rel=1e-6)
+
+
+def test_identical_dropout_policies_have_unit_ratio_and_still_learn():
+    import copy
+    from gespo.policies.torsion_ar import TorsionARPolicy
+
+    torch.manual_seed(7)
+    agent = TorsionARPolicy(num_residues=3, d_model=16, nhead=2,
+                            num_layers=1, dropout=0.5, kmix=2, n_global_tokens=1)
+    old = copy.deepcopy(agent).eval()
+    mask = torch.ones(4, 3, 3, dtype=torch.bool)
+    torsions, globals_ = old.sample_with_globals(4, angle_mask=mask)
+    config = TrainingConfig(grpo_iters=1, norm_adv=False, ent_coef=0)
+    data = dict(mode='torsion_ar', torsions=torsions, angle_mask=mask,
+                global_values=globals_, rewards=torch.ones(4),
+                valid_mask=torch.ones(4, dtype=torch.bool))
+    before = [p.detach().clone() for p in agent.parameters()]
+    stats = GRPOOptimizer(config, agent, old,
+                          [torch.optim.SGD(agent.parameters(), lr=1e-3)]).update(data)
+    assert stats['kl_s'] == 0
+    assert stats['pg_s'] == pytest.approx(1)
+    assert not agent.training and not old.training
+    assert any(not torch.equal(a, b) for a, b in zip(before, agent.parameters()))
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in agent.parameters())
+
+
+def test_all_invalid_group_skips_optimization():
+    agent = torch.nn.Linear(1, 1)
+    before = {k: v.clone() for k, v in agent.state_dict().items()}
+    stats = GRPOOptimizer(TrainingConfig(), agent, agent, []).update(dict(
+        mode='torsion_ar', rewards=torch.zeros(3), valid_mask=torch.zeros(3, dtype=torch.bool)))
+    assert stats == {'skipped_update': 1, 'valid_count': 0}
+    for key, value in before.items():
+        torch.testing.assert_close(agent.state_dict()[key], value)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('global_rmsd_range', (0, 1)), ('global_e2e_range', (1, 2)),
+    ('global_rg_range', (0, 2)), ('global_token_ranges', {'rg_nm': (0, 1)}),
+])
+def test_grpo_rejects_unscored_range_constraints(field, value):
+    from gespo.config.validation import validate_grpo_sampling
+    config = TrainingConfig()
+    setattr(config, field, value)
+    with pytest.raises(ValueError, match='Range-constrained'):
+        validate_grpo_sampling(config)
+    with pytest.raises(ValueError, match='Range-constrained'):
+        GRPOOptimizer(config, torch.nn.Linear(1, 1), torch.nn.Linear(1, 1), [])

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 03_train.sh — GESPO generative loop for Trp-cage (implicit solvent).
 #
-# The modern single-command reproduction: bootstrap from the pretrained TorsionAR
+# Introductory implicit-solvent workflow: bootstrap from the pretrained TorsionAR
 # policy + a geom2vec-VAMP backbone (no diffusion model). geom2vec-VAMP discovers
 # metastable states online; LOO-VAMP + VAMP-bin rewards drive the policy to expand
 # the sampled conformational ensemble; retrieval-steered replay resets seed rollouts
@@ -43,6 +43,7 @@ exec python -m gespo train \
   --energy-threshold 1e12 \
   --max-resample-attempts 6 \
   --no-anchoring-round \
+  --replay-only-dcd-dir metad_seeds/walker_1,metad_seeds/walker_2,metad_seeds/walker_3,metad_seeds/walker_4 \
   --torsion-ar-checkpoint "${AR_CKPT}" \
   --projection geom2vec_vamp \
   --geom2vec-ckpt "${GEOM2VEC_CKPT}" \
