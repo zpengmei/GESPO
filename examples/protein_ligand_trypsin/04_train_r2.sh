@@ -3,7 +3,7 @@
 #
 # Round 2 differs from round 1 in three ways:
 #   1. The AR policy is *re-pretrained cumulatively* on the seeds + round-1 epoch
-#      DCDs (fewer epochs, warm start) → torsion_ar_holo_r1_retrain.pt
+#      DCDs (a fresh MLE fit with fewer epochs) → torsion_ar_holo_r1_retrain.pt
 #   2. The replay pool grows to include round-1 epoch trajectories.
 #   3. simulation_topology.pdb is carried forward so the solvated system is
 #      identical across rounds.

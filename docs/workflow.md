@@ -84,7 +84,7 @@ Each round expands the ensemble; the next round learns from it. Round *n+1*:
 
 1. **Re-pretrain** the policy *cumulatively* — `--source` = the original seeds **+**
    the previous round's epoch DCDs (`runs/run_0n/run_snaps/epoch_*`), a few epochs,
-   warm-started.
+   using a fresh MLE fit (the shipped pretraining command does not warm-start).
 2. **Import unbiased history** — pass prior-round production DCD directories through
    `--history-dcd-dir`. They enter both the retrieval bank and VAMP fitting.
    Keep the original biased seeds under `--replay-only-dcd-dir`; that input
