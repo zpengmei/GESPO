@@ -8,7 +8,8 @@ atom set.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Sequence
+from enum import Enum
+from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -210,3 +211,249 @@ def is_subset_selection(selection: Optional[Sequence[int]], total_atoms: int) ->
     except Exception:
         return False
 
+# Schuyler's edits (with Claude Code) for constructing TMEM63 metrics
+# ---------------------------------------------------------------------------
+# Residue-number -> atom-index resolution, at a configurable atom-selection
+# granularity. This is the shared "build once from a topology" layer that
+# per-system global-token metric files (adk_metrics.py, tmem63_metrics.py,
+# ...) resolve their residue-based groups/pairs through, instead of each
+# hand-rolling its own (previously identical, copy-pasted) version of these
+# functions.
+# ---------------------------------------------------------------------------
+
+class AtomSelectionMode(str, Enum):
+    """How much of a matched residue's atoms to include in a selection."""
+
+    BACKBONE = "backbone"        # N, CA, C, O (+ OXT)
+    BACKBONE_CB = "backbone_cb"  # backbone + CB (legacy ADK/TMEM63 default)
+    ALL_HEAVY = "all_heavy"      # every non-hydrogen atom
+    ALL_ATOM = "all_atom"        # every atom, including hydrogens
+
+_BACKBONE_ATOM_NAMES = {"N", "CA", "C", "O", "OXT"}
+
+def _iter_topology_atoms(topology) -> Iterable:
+    atoms_attr = getattr(topology, "atoms", None)
+    if atoms_attr is None:
+        return ()
+    if callable(atoms_attr):
+        try:
+            return atoms_attr()
+        except Exception:
+            return ()
+    try:
+        return iter(atoms_attr)
+    except TypeError:
+        return ()
+
+def _iter_topology_residues(topology) -> Iterable:
+    residues_attr = getattr(topology, "residues", None)
+    if residues_attr is None:
+        return ()
+    if callable(residues_attr):
+        try:
+            return residues_attr()
+        except Exception:
+            return ()
+    try:
+        return iter(residues_attr)
+    except TypeError:
+        return ()
+
+def resolve_residue_number(res, *, use_resseq: bool) -> Optional[int]:
+    """Return a residue's number as int, preferring PDB resSeq when requested,
+    falling back to the residue's 0-based topology index."""
+    if use_resseq:
+        val = getattr(res, "resSeq", None)
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return int(getattr(res, "index"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+def atom_is_backbone(atom) -> bool:
+    try:
+        return bool(getattr(atom, "is_backbone"))
+    except Exception:
+        return str(getattr(atom, "name", "") or "").strip().upper() in _BACKBONE_ATOM_NAMES
+
+def atom_is_hydrogen(atom) -> bool:
+    element = getattr(atom, "element", None)
+    symbol = getattr(element, "symbol", None)
+    if symbol is not None:
+        return str(symbol) == "H"
+    # Fall back to name-based heuristic when element info isn't resolved (CHARMM-GUI
+    # hydrogen names are H-prefixed, e.g. HN1, HB2, HG1 -- see step5_input.psf).
+    return str(getattr(atom, "name", "") or "").strip().upper().startswith("H")
+
+def atom_matches_selection_mode(atom, mode: AtomSelectionMode) -> bool:
+    """Whether `atom` belongs to the given AtomSelectionMode."""
+    if mode == AtomSelectionMode.ALL_ATOM:
+        return True
+    if mode == AtomSelectionMode.ALL_HEAVY:
+        return not atom_is_hydrogen(atom)
+    is_bb = atom_is_backbone(atom)
+    if mode == AtomSelectionMode.BACKBONE:
+        return is_bb
+    if mode == AtomSelectionMode.BACKBONE_CB:
+        name = str(getattr(atom, "name", "") or "").strip().upper()
+        return is_bb or name == "CB"
+    raise ValueError(f"unknown AtomSelectionMode: {mode!r}")
+
+def expand_residue_range(start: int, end: int) -> Tuple[int, ...]:
+    """Turn an inclusive (start, end) residue range into an explicit tuple of
+    residue numbers, so downstream selection code only ever handles one shape
+    of input (a set of residue numbers) instead of both ranges and lists."""
+    start, end = int(start), int(end)
+    if end < start:
+        start, end = end, start
+    return tuple(range(start, end + 1))
+
+def select_atoms_by_residue(
+    topology,
+    residues: Sequence[int],
+    mode: AtomSelectionMode,
+    *,
+    use_resseq: bool,
+) -> Dict[int, np.ndarray]:
+    """Select atom indices for an explicit set of residue numbers, grouped by
+    residue rather than flattened.
+
+    Use this (instead of select_atoms_for_residues) whenever which atoms
+    belong to which residue matters -- e.g. to build a strictly *inter*-residue
+    pair list via geometry.inter_group_atom_pairs(), so a multi-atom-per-residue
+    selection (AtomSelectionMode.ALL_HEAVY, BACKBONE_CB, ...) doesn't
+    accidentally include same-residue atom-atom distances.
+
+    Args:
+        topology: MDTraj-like Topology (.atoms, .residues; each residue has
+            .resSeq and/or .index; each atom has .name and, ideally, .element).
+        residues: explicit residue numbers to include. Use
+            expand_residue_range() first if you have a contiguous range.
+        mode: which atoms within each matched residue to keep.
+        use_resseq: interpret `residues` as PDB resSeq values if True, else as
+            0-based residue index.
+
+    Returns:
+        Dict mapping residue number (as given, under the use_resseq
+        convention) -> sorted, deduplicated int64 array of global atom
+        indices matched within it. A residue in `residues` that wasn't found,
+        or whose atoms didn't satisfy `mode`, is simply absent from the dict
+        rather than present with an empty array.
+    """
+    residue_set = {int(r) for r in residues}
+    groups: Dict[int, list] = {}
+    for atom in _iter_topology_atoms(topology):
+        res = getattr(atom, "residue", None)
+        if res is None:
+            continue
+        resnum = resolve_residue_number(res, use_resseq=use_resseq)
+        if resnum is None or resnum not in residue_set:
+            continue
+        if atom_matches_selection_mode(atom, mode):
+            groups.setdefault(resnum, []).append(int(getattr(atom, "index")))
+    return {resnum: np.asarray(sorted(set(idxs)), dtype=np.int64) for resnum, idxs in groups.items()}
+
+
+def select_atoms_for_residues(
+    topology,
+    residues: Sequence[int],
+    mode: AtomSelectionMode,
+    *,
+    use_resseq: bool,
+) -> np.ndarray:
+    """Select atom indices for an explicit set of residue numbers, at a given
+    atom-selection granularity, flattened across residues.
+
+    Args:
+        topology: MDTraj-like Topology (.atoms, .residues; each residue has
+            .resSeq and/or .index; each atom has .name and, ideally, .element).
+        residues: explicit residue numbers to include. Use
+            expand_residue_range() first if you have a contiguous range.
+        mode: which atoms within each matched residue to keep.
+        use_resseq: interpret `residues` as PDB resSeq values if True, else as
+            0-based residue index.
+
+    Returns:
+        Sorted, deduplicated int64 array of global atom indices. Empty if no
+        residue in `residues` was found in the topology, or none of their
+        atoms satisfied `mode`. Callers building a required group should
+        treat an empty result as a configuration error (see
+        build_tmem63_token_indices's completeness checks) rather than silently
+        proceeding with a group that resolves to nothing.
+    """
+    grouped = select_atoms_by_residue(topology, residues, mode, use_resseq=use_resseq)
+    if not grouped:
+        return np.zeros((0,), dtype=np.int64)
+    flat = {int(i) for arr in grouped.values() for i in arr.tolist()}
+    return np.asarray(sorted(flat), dtype=np.int64)
+
+def reindexed_topology_subset(topology, atom_indices: Sequence[int]):
+    """Build a new MDTraj Topology containing exactly the given atoms, in
+    exactly the given order.
+
+    CAUTION: mdtraj's own Topology.subset()/Trajectory.atom_slice() silently
+    re-sort atom_indices into monotonically increasing order (confirmed
+    empirically -- they warn "atom_indices are not monotonically increasing"
+    and reorder anyway), which silently changes which local index corresponds
+    to which original atom whenever the input isn't already sorted. This
+    function preserves the caller's given order exactly instead: local index
+    i in the result always corresponds to atom_indices[i] in the original
+    topology. Needed wherever a "local index" convention (local index ==
+    position within some already-built index array, e.g. build_tmem63_token_indices's
+    protein_map) has to stay consistent with a freshly-built topology object
+    -- e.g. to write a PDB whose atom order matches an existing protein_map,
+    for handing off to a library (MDAnalysis) that needs a real topology file.
+
+    Args:
+        topology: MDTraj-like Topology (.atoms; each atom has .name, .element,
+            .residue with .name/.resSeq).
+        atom_indices: global atom indices into `topology`, in the desired
+            output order. May repeat/reorder residues arbitrarily; atoms
+            belonging to the same original residue are grouped into the same
+            new residue no matter where they fall in `atom_indices`.
+
+    Returns:
+        A new mdtraj.Topology with len(atom_indices) atoms in exactly that
+        order, in one chain.
+    """
+    import mdtraj as md
+
+    atoms_by_index = {int(a.index): a for a in _iter_topology_atoms(topology)}
+    new_top = md.Topology()
+    chain = new_top.add_chain()
+    residue_by_original_id: Dict[int, object] = {}
+    for idx in atom_indices:
+        atom = atoms_by_index[int(idx)]
+        res = atom.residue
+        res_key = int(getattr(res, "index", -1))
+        new_residue = residue_by_original_id.get(res_key)
+        if new_residue is None:
+            new_residue = new_top.add_residue(
+                str(getattr(res, "name", "UNK")), chain, resSeq=int(getattr(res, "resSeq", 0))
+            )
+            residue_by_original_id[res_key] = new_residue
+        new_top.add_atom(str(atom.name), atom.element, new_residue)
+    return new_top
+
+
+def find_ca_atom(topology, *, residue_num: int, use_resseq: bool) -> Optional[int]:
+    """Find the CA atom index for a single residue, by resSeq or 0-based index.
+
+    Intentionally does not fall back to "first atom in the residue" when CA is
+    missing: in explicit-solvent systems, resSeq values can coincide with
+    water/ion residues too, and a silent fallback would treat e.g. a water
+    oxygen as "CA" and produce a meaningless metric with no warning.
+    """
+    target = int(residue_num)
+    for res in _iter_topology_residues(topology):
+        resnum = resolve_residue_number(res, use_resseq=use_resseq)
+        if resnum is None or resnum != target:
+            continue
+        for atom in getattr(res, "atoms", ()):
+            if str(getattr(atom, "name", "") or "").strip().upper() == "CA":
+                return int(getattr(atom, "index"))
+        return None
+    return None

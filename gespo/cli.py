@@ -181,16 +181,23 @@ def _resolve_device(args: argparse.Namespace) -> None:
 
 
 def _load_config_from_args(args: argparse.Namespace) -> argparse.Namespace:
-    """If --config is set, load YAML and merge with CLI overrides."""
+    """Resolve args into a fully-defaulted Namespace.
+
+    If --config is set, load the YAML and merge with CLI overrides.
+    Otherwise, resolve straight from the CLI args.
+
+    Every field ends up either explicitly set or filled from its
+    TrainingConfig dataclass default.
+    """
     config_path = str(getattr(args, "config", "") or "").strip()
-    if not config_path:
-        return args
-    from .config.loader import load_config
-    cli_overrides = {k: v for k, v in vars(args).items() if k != "config" and v is not None}
-    config = load_config(config_path, overrides=cli_overrides)
-    args = argparse.Namespace(**config.to_dict())
-    print(f"[Config] Loaded from {config_path}")
-    return args
+    if config_path:
+        from .config.loader import load_config
+        cli_overrides = {k: v for k, v in vars(args).items() if k != "config" and v is not None}
+        config = load_config(config_path, overrides=cli_overrides)
+        print(f"[Config] Loaded from {config_path}")
+    else:
+        config = TrainingConfig.from_args(args)
+    return argparse.Namespace(**config.to_dict())
 
 
 def _save_effective_config(args: argparse.Namespace) -> None:

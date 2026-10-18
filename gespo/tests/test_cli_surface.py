@@ -9,7 +9,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from gespo.cli import _apply_mode_solvent_shortcuts
+from gespo.cli import _apply_mode_solvent_shortcuts, _load_config_from_args, _resolve_device
 from gespo.config import TrainingConfig
 from gespo.config.cli_gen import ESSENTIAL_FIELDS
 
@@ -75,3 +75,18 @@ def test_mode_solvent_attrs_do_not_leak():
     c = _cfg(["--pdb", "x.pdb", "--mode", "generative", "--solvent", "explicit"])
     assert "mode" not in c and "solvent" not in c
     assert c["explicit_solvent"] is True and c["generative_loop"] is True
+
+
+def test_cli_without_yaml_resolves_unset_defaults_and_explicit_device():
+    args = _parser().parse_args(['--pdb', 'x.pdb', '--gen-device', 'cuda:2',
+                                 '--n-md-steps', '41', '--implicit-solvent'])
+    _apply_mode_solvent_shortcuts(args)
+    resolved = _load_config_from_args(args)
+    _resolve_device(resolved)
+    defaults = TrainingConfig()
+    assert resolved.n_md_steps == 41
+    assert resolved.gen_device == 'cuda:2' and resolved.device == 2
+    assert resolved.lr == defaults.lr
+    assert resolved.episodes == defaults.episodes
+    assert resolved.implicit_solvent and not resolved.explicit_solvent
+    assert resolved.diagnostics_plugin == ''
